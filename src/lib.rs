@@ -14,13 +14,53 @@ use futures::{
 use message::AppMessage;
 
 mod app;
-mod message;
-mod view_state;
-mod window_message;
-mod interaction;
 mod bindings;
 mod glvideo;
+mod interaction;
+mod message;
 mod vertex;
+mod view_state;
+mod window_message;
+mod element_timer;
+
+
+#[derive(Debug)]
+pub struct AppConfig {
+    viewport_size: (u32, u32),
+    case_key: Option<String>,
+    ws_url: String,
+    bitrate: f32,
+    gpu: bool,
+    preset: String,
+    lossless: bool,
+    video_scaling: f32,
+    narrow: bool,
+}
+impl AppConfig {
+    pub fn new(
+        ws_url: String,
+        viewport_size: (u32, u32),
+        case_key: Option<String>,
+        bitrate: f32,
+        gpu: bool,
+        preset: String,
+        lossless: bool,
+        video_scaling: f32,
+        narrow: bool,
+    ) -> Self {
+        Self {
+            ws_url,
+            viewport_size,
+            case_key,
+            bitrate,
+            gpu,
+            preset,
+            lossless,
+            video_scaling,
+            narrow,
+        }
+    }
+}
 
 fn start_sender<S>(sink: S, rcv: UnboundedReceiver<AppMessage>) -> JoinHandle<()>
 where
@@ -71,7 +111,8 @@ fn run_signalling(
             let (ws, response) = connect_async(url)
                 .await
                 .expect("Failed to connect to server");
-            dbg!(response);
+
+            log::debug!("Got respose from websocker server: {:?}", response);
             let (outgoing, incomming) = ws.split();
 
             let send_handle = start_sender(outgoing.sink_map_err(|e| e.into()), rcv);
@@ -83,24 +124,24 @@ fn run_signalling(
             // Make sure all remaining tasks are canceled
             future::join_all(to_cancel.into_iter().map(|x| x.cancel())).await;
 
-            println!("Main task is complete");
+            log::debug!("Main task is complete");
         });
     })
 }
 
-pub fn run(ws_url: String) -> Result<()> {
+pub fn run(config: AppConfig) -> Result<()> {
     // Init GStreamer
     gstreamer::init().expect("Failed to initialize GStreamer");
 
     let (snd, rcv) = unbounded::<AppMessage>();
     let app = App::new(snd);
 
-    let signal_thread = run_signalling(ws_url, Arc::downgrade(&app.0), rcv);
+    let signal_thread = run_signalling(config.ws_url.clone(), Arc::downgrade(&app.0), rcv);
 
-    app.main_loop();
+    app.main_loop(config);
     // Wait for the signal thread to complete (it exits when the app is dropped)
     let _ = signal_thread.join();
-    println!("All done");
+    log::debug!("All done");
 
     Ok(())
 }

@@ -1,4 +1,7 @@
-use glutin::{dpi::PhysicalPosition, event::{ElementState, ModifiersState, MouseButton}};
+use glutin::{
+    dpi::PhysicalPosition,
+    event::{ElementState, ModifiersState, MouseButton},
+};
 
 use crate::{
     app::App,
@@ -23,6 +26,7 @@ pub struct InteractionState {
     anchor: Option<PhysicalPosition<f64>>,
     mouse_position: Option<PhysicalPosition<f64>>,
     scroll_delta: Option<f32>,
+    frame_acc: f32,
 
     left_mouse: bool,
     right_mouse: bool,
@@ -43,6 +47,7 @@ impl InteractionState {
             anchor: None,
             mouse_position: None,
             scroll_delta: None,
+            frame_acc: 0_f32,
             left_mouse: false,
             right_mouse: false,
             middle_mouse: false,
@@ -114,13 +119,29 @@ impl InteractionState {
         })
     }
 
-    fn update_frame(&mut self, delta: i32) {
+    fn update_frame(&mut self, delta: f32) -> bool {
+        self.frame_acc += delta;
+
+        let abs_delta = self.frame_acc.abs().round() as i32;
+        let delta_sign = self.frame_acc.signum() as i32;
+        if abs_delta != 0 {
+            self.frame_acc = 0_f32;
+        }
+        let frame_delta = delta_sign * abs_delta;
+
         let current_frame = self.viewstate.frame.unwrap_or(0) as i32;
         // Need to check bounds.
-        let next_frame = (current_frame + delta)
+        let next_frame = (current_frame + frame_delta)
             .max(0)
             .min(self.image_count.unwrap_or(0) as i32);
-        self.viewstate.set_frame(Some(next_frame as u32));
+
+        // Return true if the frame has changed.
+        if next_frame != current_frame {
+            self.viewstate.set_frame(Some(next_frame as u32));
+            true
+        } else {
+            false
+        }
     }
 
     pub fn update(&mut self) -> bool {
@@ -128,27 +149,24 @@ impl InteractionState {
         // we need to "exit old"/"enter new".
         let mode = self.mode_from_state();
         if !self.same_mode(mode) {
-            println!("Mode change from {:?} to {:?}", self.mode, mode);
+            log::trace!("Mode change from {:?} to {:?}", self.mode, mode);
             self.mode = mode;
             // Reset anchor
             self.anchor = None;
         }
-        // dbg!(&self.mouse_position);
-        // dbg!(&self.anchor);
         let anchor = self.anchor.or(self.mouse_position);
         let movement = self.mouse_position.map(|p| {
             // Sine we have a mouse position it is safe to unwrap the anchor
             let a = anchor.unwrap();
             (p.x - a.x, p.y - a.y)
         });
-        // dbg!(movement);
 
         let mut updated = false;
         if let Some(mode) = self.mode {
             match mode {
                 InteractionMode::Zoom => {
                     if let Some(movement) = movement {
-                        let factor = movement.1 as f32 / 256.0_f32;
+                        let factor = (1_f32 - movement.1 as f32 / 256.0_f32).max(0_f32);
                         self.viewstate.update_magnification(factor);
                         updated = true;
                     }
@@ -162,24 +180,22 @@ impl InteractionState {
                 }
                 InteractionMode::Scroll => {
                     if let Some(delta) = self.scroll_delta {
-                        let delta = delta.ceil() as i32;
                         // Move frames forward
-                        self.update_frame(delta);
+                        self.update_frame(-delta);
                         updated = true;
                     }
                 }
                 InteractionMode::FastScroll => {
                     if let Some(movement) = movement {
-                        let delta = (movement.1 as f32 / 256.0_f32).ceil() as i32;
+                        let delta = movement.1 as f32 / 10.0_f32;
                         // Use delta to move the frames forward.
-                        self.update_frame(delta);
-                        updated = true;
+                        updated = self.update_frame(delta);
                     }
                 }
                 InteractionMode::Wl => {
                     if let Some(movement) = movement {
-                        let delta_c = movement.1 as f32 / 256.0_f32;
-                        let delta_w = movement.0 as f32 / 256.0_f32;
+                        let delta_c = (1_f32 + movement.1 as f32 / 256.0_f32).max(0_f32);
+                        let delta_w = (1_f32 + movement.0 as f32 / 256.0_f32).max(0_f32);
                         self.viewstate.update_center(delta_c);
                         self.viewstate.update_width(delta_w);
                         updated = true;
@@ -217,12 +233,9 @@ mod tests {
     use super::*;
     #[test]
     fn test() {
-        let a:Option<InteractionMode> = Some(InteractionMode::Pan);
-        let b: Option<InteractionMode> = None;//Some(InteractionMode::Scroll);
-        let same = a.map_or(b.is_none(), |new| {
-            b.map_or(false, |old| new == old)
-        });
+        let a: Option<InteractionMode> = Some(InteractionMode::Pan);
+        let b: Option<InteractionMode> = None; //Some(InteractionMode::Scroll);
+        let same = a.map_or(b.is_none(), |new| b.map_or(false, |old| new == old));
         assert_eq!(same, false);
-
     }
 }

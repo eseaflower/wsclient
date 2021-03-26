@@ -22,6 +22,7 @@ pub struct ClientConfig {
     pub lossless: bool,
     pub bitrate: f32,
     pub preset: String,
+    pub fullrange: bool,
 }
 impl Default for ClientConfig {
     fn default() -> Self {
@@ -36,6 +37,7 @@ impl Default for ClientConfig {
             lossless: false,
             bitrate: 4_f32,
             preset: "default".to_owned(),
+            fullrange: true,
         }
     }
 }

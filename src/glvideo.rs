@@ -296,9 +296,9 @@ impl GlRenderer {
             // that the pipeline produces.
             sync_meta.wait(&self.own_ctx);
             if let Some(image_texture) = frame.get_texture_id(0) {
+                log::trace!("Got frame texture with id {}", image_texture);
                 // Compute the vertices to use
                 let image_vertices = self.quad.get_vertex(&self.state);
-                dbg!(image_texture);
                 self.draw(image_vertices, image_texture);
             }
         }

@@ -36,7 +36,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{glvideo::GlRenderer, view_state::ViewState};
+use crate::{element_timer::ElementTimer, glvideo::GlRenderer, view_state::ViewState, AppConfig};
 use crate::{
     interaction::InteractionState,
     message::{self, AppMessage, CaseMeta, DataMessage},
@@ -48,6 +48,7 @@ use message::{ClientConfig, RenderState, ViewportSize};
 struct SharedState {
     proxy: Option<EventLoopProxy<WindowMessage>>,
     samples: Vec<gst::Sample>,
+    timers: Vec<ElementTimer>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,16 +100,10 @@ impl App {
             shared: Mutex::new(SharedState {
                 proxy: None,
                 samples: Vec::default(),
+                timers: Vec::default(),
             }),
         };
         let app = App(Arc::new(inner));
-
-        app.webrtcbin
-            .connect("on-negotiation-needed", false, |v| {
-                println!("Got neg needed");
-                None
-            })
-            .expect("ksgj");
 
         app.setup_ice_callback();
         app.setup_stream_callback();
@@ -121,7 +116,7 @@ impl App {
         let weak_app = Arc::downgrade(&self.0);
         self.webrtcbin
             .connect("on-data-channel", false, move |values| {
-                println!("Got datachannel callback");
+                log::debug!("Got datachannel callback");
                 if let Some(app) = weak_app.upgrade().map(App) {
                     let dc = values[1]
                         .get::<gst_webrtc::WebRTCDataChannel>()
@@ -139,7 +134,7 @@ impl App {
     fn setup_stream_callback(&self) {
         let weak_app = Arc::downgrade(&self.0);
         self.webrtcbin.connect_pad_added(move |_webrtc, pad| {
-            println!("Got webrtc pad");
+            log::debug!("Got webrtc pad");
             let app = weak_app.upgrade().map(App);
             if let Some(app) = app {
                 if let Err(e) = app.on_incomming_stream(pad) {
@@ -159,14 +154,14 @@ impl App {
         if pad.get_direction() != gst::PadDirection::Src {
             return Ok(());
         }
-        println!("Linking new stream");
+        log::debug!("Linking new stream");
 
         // let pipeline_description = "identity name=ident ! application/x-rtp, media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264, payload=(int)96
         //  ! rtph264depay name=depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! d3d11upload ! d3d11videosink";
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! d3d11upload ! d3d11convert ! d3d11videosink sync=false";
         let pipeline_description =
-            "rtph264depay name=depay ! h264parse ! avdec_h264 ! glupload name=upload ! glcolorconvert ! appsink name=appsink";
+            "rtph264depay name=depay ! h264parse name=parse ! avdec_h264 name=decoder ! glupload name=upload ! glcolorconvert name=convert ! appsink name=appsink";
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! glupload ! glcolorconvert ! glimagesinkelement sync=false max-lateness=1 processing-deadline=1 enable-last-sample=false";
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! fakesink sync=false";
@@ -185,7 +180,7 @@ impl App {
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |appsink| {
                     if let Some(app) = weak_app.upgrade().map(App) {
-                        println!("Got sample callback");
+                        log::trace!("Got sample callback");
                         let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                         app.queue_sample(sample);
                         Ok(gst::FlowSuccess::Ok)
@@ -219,26 +214,6 @@ impl App {
             .build();
         appsink.set_caps(Some(&caps));
 
-        // let decodebin = gst::ElementFactory::make("decodebin", Some("decoder"))
-        //     .expect("Failed to create decodebin");
-
-        // // Hook up another pad added
-        // let weak_app = Arc::downgrade(&self.0);
-        // decodebin.connect_pad_added(move |_decodebin, pad| {
-        //     let app = weak_app.upgrade().map(App);
-        //     if let Some(app) = app {
-        //         if let Err(e) = app.on_decodebin_pad(pad) {
-        //             gst::gst_element_error!(
-        //                 app.pipeline,
-        //                 gst::LibraryError::Failed,
-        //                 ("Failed to handle incomming decodebin pad {:?}", e)
-        //             );
-        //         }
-        //     } else {
-        //         log::warn!("Failed to upgrade weak_app");
-        //     }
-        // });
-
         self.pipeline
             .add(&decodebin)
             .expect("Failed to add decodebin element to pipeline");
@@ -246,53 +221,24 @@ impl App {
             .sync_state_with_parent()
             .expect("Failed to sync decodebin with parent");
 
-        // let link_element = decodebin
-        //     .get_by_name("ident")
-        //     .expect("Failed to get depay element");
-        // let sinkpad = link_element
-        //     .get_static_pad("sink")
-        //     .expect("Failed to get sink from depay");
         let sinkpad = decodebin
             .get_static_pad("sink")
             .expect("Failed to get sink pad of decodebin");
         pad.link(&sinkpad)
             .expect("Failed to link incomming stream to decodebin");
 
-        self.pipeline.call_async(|pipeline| {
-            pipeline
-                .set_state(gst::State::Playing)
-                .expect("Failed to set playing");
-        });
-        // gst::debug_bin_to_dot_file(&self.pipeline, DebugGraphDetails::ALL, "graph_2.ts");
-        Ok(())
-    }
+        let depay = decodebin
+            .get_by_name("parse")
+            .expect("Failed to get depay");
+        let convert = decodebin
+            .get_by_name("convert")
+            .expect("Failed to get appsink");
 
-    fn on_decodebin_pad(&self, pad: &gst::Pad) -> Result<()> {
-        println!("Got decodebin pad");
-        let caps = pad.get_current_caps().unwrap();
-        let name = caps.get_structure(0).unwrap().get_name();
-
-        let sink = if name.starts_with("video/") {
-            gst::parse_bin_from_description(
-                "queue ! videoconvert ! videoscale ! autovideosink",
-                true,
-            )?
-        } else {
-            println!("Unknown pad {:?}, ignoring", pad);
-            return Ok(());
-        };
-
-        self.pipeline.add(&sink).unwrap();
-        sink.sync_state_with_parent()
-            .expect("Failed to sync video sink with parent");
-
-        let sinkpad = sink
-            .get_static_pad("sink")
-            .expect("Failed to get sink of video");
-        pad.link(&sinkpad)
-            .expect("Failed to link decodebin to video");
-
-        // gst::debug_bin_to_dot_file(&self.pipeline, DebugGraphDetails::ALL, "graph_3.ts");
+        let timer = ElementTimer::new("depay-convert", depay, convert);
+        {
+            let mut shared = self.shared.lock().unwrap();
+            shared.timers.push(timer);
+        }
 
         Ok(())
     }
@@ -412,7 +358,6 @@ impl App {
                 candidate,
             } => self.handle_ice(sdp_mline_index, &candidate),
             AppMessage::Case(cases) => {
-                println!("Got {} cases", cases.len());
                 self.send_window_message(WindowMessage::Cases(cases));
             }
             _ => log::error!("Unexpected message {:?}", msg),
@@ -462,7 +407,7 @@ impl App {
             match datachannel.get_property_ready_state() {
                 gstreamer_webrtc::WebRTCDataChannelState::Open => {
                     if let Ok(msg) = String::try_from(msg) {
-                        // println!("DC sending: {}", &msg);
+                        log::trace!("DC sending: {}", &msg);
                         datachannel.send_string(Some(&msg));
                         true
                     } else {
@@ -476,15 +421,21 @@ impl App {
         }
     }
 
-    fn connect(&self, size: (u32, u32)) {
+    fn connect(&self, config: &AppConfig) {
         let cfg = ClientConfig {
+            id: "NativeClient".to_string(),
             viewport: ViewportSize {
-                width: size.0,
-                height: size.1,
+                width: config.viewport_size.0,
+                height: config.viewport_size.1,
             },
-            ..ClientConfig::default()
+            bitrate: config.bitrate,
+            gpu: config.gpu,
+            preset: config.preset.clone(),
+            lossless: config.lossless,
+            video_scaling: config.video_scaling,
+            fullrange: !config.narrow,
         };
-        dbg!(&cfg);
+        log::info!("Connecting with {:?}", &cfg);
 
         let msg = AppMessage::Connect(vec![cfg]);
         self.send_app_message(msg)
@@ -495,7 +446,6 @@ impl App {
         ctx: ContextWrapper<NotCurrent, Window>,
     ) -> (ContextWrapper<NotCurrent, Window>, gst_gl::GLContext) {
         let ctx = unsafe { ctx.make_current().expect("Failed to make context current") };
-        println!("Main contex is: {:?}", ctx);
 
         // Build gstreamer sharable context
         let (gl_context, gl_display, platform) = match unsafe { ctx.raw_handle() } {
@@ -576,11 +526,11 @@ impl App {
             .expect("Context is empty")
     }
 
-    pub fn main_loop(self) -> Result<()> {
-        println!("Starting app main loop on thread");
+    pub fn main_loop(self, config: AppConfig) -> Result<()> {
+        log::debug!("Starting app main loop on current thread");
 
         let event_loop = EventLoop::<WindowMessage>::with_user_event();
-        let size = (640_u32, 480_u32);
+        let size = config.viewport_size;
         let window_builder = WindowBuilder::new().with_inner_size(PhysicalSize {
             width: size.0,
             height: size.1,
@@ -607,7 +557,7 @@ impl App {
             .expect("Failed to set the pipeline to playing");
 
         // Connect to server
-        self.connect(size);
+        self.connect(&config);
 
         // We really need to ensure that connect() has been handled before we send another
         // ws-request, otherwise the server might error out.
@@ -628,13 +578,15 @@ impl App {
         bus.set_sync_handler(move |_b, msg| {
             // Check if this is the message we are looking for
             if gst_video::is_video_overlay_prepare_window_handle_message(msg) {
-                println!("Got prepare window handle message");
+                log::debug!(
+                    "Got prepare window handle message. Current handle is {:?}",
+                    window_handle
+                );
                 let src = msg.get_src().expect("Failed to get message source");
                 let oly = src
                     .dynamic_cast::<gst_video::VideoOverlay>()
                     .expect("Failed to convert src to video overlay");
 
-                dbg!(window_handle);
                 unsafe { oly.set_window_handle(window_handle) };
 
                 return gst::BusSyncReply::Drop;
@@ -699,9 +651,23 @@ impl App {
             match event {
                 Event::UserEvent(wm) => match wm {
                     WindowMessage::Cases(new_cases) => {
+                        let case_keys: Vec<_> = new_cases.iter().map(|c| c.key.clone()).collect();
+                        let cases_string = case_keys.join("\n");
+                        println!("Known cases:\n{}", cases_string);
+
                         cases = Some(new_cases);
-                        let selected_case = cases.as_ref().unwrap().first().map(|c| c.clone());
+                        let selected_case = if let Some(ref wanted) = config.case_key {
+                            cases
+                                .as_ref()
+                                .unwrap()
+                                .iter()
+                                .find(|c| *c.key == *wanted)
+                                .map(|c| c.clone())
+                        } else {
+                            cases.as_ref().unwrap().first().map(|c| c.clone())
+                        };
                         if let Some(ref case) = selected_case {
+                            println!("Selected case: {}", &case.key);
                             interaction_state.set_case(case.key.clone(), case.number_of_images);
                             dirty = true;
                         }
@@ -716,14 +682,14 @@ impl App {
                                 ctx.make_current().expect("Failed to current context")
                             });
 
-                            println!(
-                                "Format: {:?}",
+                            log::debug!(
+                                "Using window with settings: {:?}",
                                 main_context.as_ref().unwrap().get_pixel_format()
                             );
 
                             let own_context = own_context.take().expect("Context is empty");
 
-                            println!("Main context has been currented");
+                            log::debug!("Main context has been currented");
                             renderer = Some(Self::create_renderer(
                                 main_context.as_ref().unwrap(),
                                 size,
@@ -734,12 +700,14 @@ impl App {
                         }
                         // Handle all new samples!
                         if let Some(sample) = self.get_last_sample() {
-                            println!("Main loop got a sample");
+                            log::trace!("Main loop got a sample");
                             if let Some(ref renderer) = renderer {
                                 renderer.render(sample);
                                 if let Some(ref main_context) = main_context {
                                     // Swap back-buffer
-                                    main_context.swap_buffers();
+                                    main_context
+                                        .swap_buffers()
+                                        .expect("Failed to swap back-buffer");
                                 }
                             }
                         }
@@ -776,15 +744,9 @@ impl App {
                 }
                 Event::MainEventsCleared => {
                     if dirty {
-                        // println!("Trying to send a new state message");
                         let state = interaction_state.get_render_state(false);
                         self.try_send_message(DataMessage::NewState(state));
                         dirty = false;
-                        // Check if the main_context has been currented (i.e. we have gotten at least one sample through the pipeline)
-                        // if let Some(ref ctx) = main_context {
-                        //     println!("Requesting redraw");
-                        //     ctx.window().request_redraw();
-                        // }
                     }
 
                     if time.elapsed().as_secs_f32() > 10_f32 && dump {
