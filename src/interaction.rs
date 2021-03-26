@@ -144,15 +144,25 @@ impl InteractionState {
         }
     }
 
+    pub fn hide_cursor(&self) -> bool {
+        let mode = self.mode_from_state();
+        match mode {
+            Some(InteractionMode::Pan) => true,
+            _ => false
+        }
+    }
+
     pub fn update(&mut self) -> bool {
         // Check which interaction mode we should be in. If it differs from what is set,
         // we need to "exit old"/"enter new".
         let mode = self.mode_from_state();
+        let mut mode_change = false;
         if !self.same_mode(mode) {
             log::trace!("Mode change from {:?} to {:?}", self.mode, mode);
             self.mode = mode;
             // Reset anchor
             self.anchor = None;
+            mode_change = true;
         }
         let anchor = self.anchor.or(self.mouse_position);
         let movement = self.mouse_position.map(|p| {
@@ -208,7 +218,7 @@ impl InteractionState {
         self.scroll_delta = None;
         // The state has been updated given the current mouse position
         self.anchor = self.mouse_position;
-        updated
+        updated || mode_change
     }
 
     pub fn get_render_state(&mut self, snapshot: bool) -> RenderState {

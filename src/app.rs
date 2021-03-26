@@ -227,9 +227,7 @@ impl App {
         pad.link(&sinkpad)
             .expect("Failed to link incomming stream to decodebin");
 
-        let depay = decodebin
-            .get_by_name("parse")
-            .expect("Failed to get depay");
+        let depay = decodebin.get_by_name("parse").expect("Failed to get depay");
         let convert = decodebin
             .get_by_name("convert")
             .expect("Failed to get appsink");
@@ -738,6 +736,16 @@ impl App {
                             interaction_state.handle_mouse_wheel(delta);
                         }
                         _ => {}
+                    }
+
+                    // Check if we should hide the cursor.
+                    if let Some(ref main_context) = main_context {
+                        let window = main_context.window();
+                        if interaction_state.hide_cursor() {
+                            window.set_cursor_visible(false);
+                        } else {
+                            window.set_cursor_visible(true);
+                        }
                     }
                     // Check if we need to update the dirty flag.
                     dirty = dirty || interaction_state.update();
