@@ -1,6 +1,3 @@
-* Connect to server.
-    - Copy-paste the message structure from server?
-    - Otherwise need workspace and shared crate etc.
 * Get case-structure back from server via ws.
 * Select any case and create a default state, send to server
 * Setup gstreamer

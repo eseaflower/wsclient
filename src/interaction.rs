@@ -1,17 +1,8 @@
+use crate::{message::RenderState, view_state::ViewState};
 use glutin::{
     dpi::PhysicalPosition,
     event::{ElementState, ModifiersState, MouseButton},
 };
-
-use crate::{
-    app::App,
-    message::RenderState,
-    view_state::{self, ViewState},
-};
-// use winit::{
-//     dpi::PhysicalPosition,
-//     event::{ElementState, ModifiersState, MouseButton},
-// };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum InteractionMode {
@@ -133,7 +124,7 @@ impl InteractionState {
         // Need to check bounds.
         let next_frame = (current_frame + frame_delta)
             .max(0)
-            .min(self.image_count.unwrap_or(0) as i32);
+            .min((self.image_count.unwrap_or(1) as i32) - 1); // We need the index of the frame
 
         // Return true if the frame has changed.
         if next_frame != current_frame {
@@ -148,7 +139,7 @@ impl InteractionState {
         let mode = self.mode_from_state();
         match mode {
             Some(InteractionMode::Pan) => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -223,7 +214,7 @@ impl InteractionState {
 
     pub fn get_render_state(&mut self, snapshot: bool) -> RenderState {
         let cursor = match self.mode {
-            Some(InteractionMode::Pan) => self.mouse_position.map(|p| (p.x as f32, p.y as f32)),
+            Some(InteractionMode::Pan) => self.anchor.map(|p| (p.x as f32, p.y as f32)),
             _ => None,
         };
         self.seq += 1;

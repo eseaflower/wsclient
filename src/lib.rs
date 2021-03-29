@@ -18,11 +18,10 @@ mod bindings;
 mod glvideo;
 mod interaction;
 mod message;
+mod util;
 mod vertex;
 mod view_state;
 mod window_message;
-mod element_timer;
-
 
 #[derive(Debug)]
 pub struct AppConfig {
@@ -138,7 +137,7 @@ pub fn run(config: AppConfig) -> Result<()> {
 
     let signal_thread = run_signalling(config.ws_url.clone(), Arc::downgrade(&app.0), rcv);
 
-    app.main_loop(config);
+    let _ = app.main_loop(config);
     // Wait for the signal thread to complete (it exits when the app is dropped)
     let _ = signal_thread.join();
     log::debug!("All done");

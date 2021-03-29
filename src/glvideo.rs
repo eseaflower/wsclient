@@ -35,21 +35,19 @@ impl GlRenderer {
         F: FnMut(&'static str) -> *const c_void,
     {
         let bindings = gl::Gl::load_with(func);
-        Self::with_bindings(bindings, false, own_ctx, pipe_ctx)
+        Self::with_bindings(bindings, own_ctx, pipe_ctx)
     }
 
     pub fn with_bindings(
         bindings: gl::Gl,
-        snapshot: bool,
         own_ctx: gst_gl::GLContext,
         pipe_ctx: gst_gl::GLContext,
     ) -> Self {
-        unsafe { Self::create(bindings, snapshot, own_ctx, pipe_ctx) }
+        unsafe { Self::create(bindings, own_ctx, pipe_ctx) }
     }
 
     unsafe fn create(
         bindings: gl::Gl,
-        snapshot: bool,
         own_ctx: gst_gl::GLContext,
         pipe_ctx: gst_gl::GLContext,
     ) -> Self {
@@ -59,8 +57,6 @@ impl GlRenderer {
             include_str!("shaders/glfrag_argb.glsl"),
         );
         let (image_vao, image_vertex_buffer, image_index_buffer) = Self::create_vao(&bindings);
-        let (pointer_vao, pointer_vertex_buffer, pointer_index_buffer) =
-            Self::create_vao(&bindings);
 
         let mut state = ViewState::new();
         state.set_zoom_mode(Zoom::Pixel(1.0_f32));

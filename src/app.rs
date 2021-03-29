@@ -7,9 +7,9 @@ use glutin::{
     ContextWrapper, NotCurrent, PossiblyCurrent,
 };
 // use event_loop::{ControlFlow, EventLoopProxy};
-use gst::{prelude::*, DebugGraphDetails};
-use gst_gl::{GLContextExt, VideoFrameGLExt};
-use gst_video::{VideoOverlayExt, VideoOverlayExtManual};
+use gst::prelude::*;
+use gst_gl::GLContextExt;
+use gst_video::VideoOverlayExtManual;
 use gstreamer as gst;
 use gstreamer_app as gst_app;
 use gstreamer_gl as gst_gl;
@@ -18,7 +18,7 @@ use gstreamer_video as gst_video;
 use gstreamer_webrtc as gst_webrtc;
 
 use anyhow::Result;
-use futures::channel::{self, mpsc::UnboundedSender};
+use futures::channel::mpsc::UnboundedSender;
 use raw_window_handle::HasRawWindowHandle;
 use window_message::WindowMessage;
 // use winit::{
@@ -30,19 +30,22 @@ use window_message::WindowMessage;
 
 use std::{
     convert::TryFrom,
-    ops::{Add, Deref},
+    ops::Deref,
     sync::{Arc, Mutex},
-    thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use crate::{element_timer::ElementTimer, glvideo::GlRenderer, view_state::ViewState, AppConfig};
+use crate::window_message;
+use crate::{
+    glvideo::GlRenderer,
+    util::{element_timer::ElementTimer, window_timer::start_window_timer},
+    AppConfig,
+};
 use crate::{
     interaction::InteractionState,
-    message::{self, AppMessage, CaseMeta, DataMessage},
+    message::{self, AppMessage, DataMessage},
 };
-use crate::{vertex::Quad, window_message};
-use message::{ClientConfig, RenderState, ViewportSize};
+use message::{ClientConfig, ViewportSize};
 
 #[derive(Debug)]
 struct SharedState {
@@ -604,11 +607,6 @@ impl App {
                                     s.set("context", &shared_context);
                                 }
                                 el.set_context(&context);
-
-                                // Signal that the context is shared so we can current the main context
-                                if let Some(app) = weak_app.upgrade().map(App) {
-                                    app.send_window_message(WindowMessage::ContextShared);
-                                }
                             }
                         }
                     }
@@ -626,12 +624,8 @@ impl App {
             gst::BusSyncReply::Pass
         });
 
-        let mut cases = None;
         let mut interaction_state = InteractionState::new();
         let mut dirty = false;
-
-        let time = std::time::Instant::now();
-        let mut dump = true;
 
         // This is the context until we have the first sample, then we know
         // that context sharing is done and we can current the context.
@@ -640,7 +634,17 @@ impl App {
         let mut renderer: Option<GlRenderer> = None;
         let mut own_context: Option<gst_gl::GLContext> = Some(own_context);
 
-        event_loop.run(move |event, target, flow| {
+        let mut request_response: Vec<Instant> = Vec::new();
+
+        // Start a timer to get reliable callbacks on the event loop
+        let interactions_per_second = 60;
+        let request_timeout_ms = (1000_f32 / interactions_per_second as f32).floor() as u64;
+        start_window_timer(
+            event_loop.create_proxy(),
+            Duration::from_millis(request_timeout_ms),
+        );
+
+        event_loop.run(move |event, _target, flow| {
             // The actual rendering seems not dependant on this loop.
             // So we can wait for new events.
             *flow = ControlFlow::Wait;
@@ -653,16 +657,13 @@ impl App {
                         let cases_string = case_keys.join("\n");
                         println!("Known cases:\n{}", cases_string);
 
-                        cases = Some(new_cases);
                         let selected_case = if let Some(ref wanted) = config.case_key {
-                            cases
-                                .as_ref()
-                                .unwrap()
+                            new_cases
                                 .iter()
                                 .find(|c| *c.key == *wanted)
                                 .map(|c| c.clone())
                         } else {
-                            cases.as_ref().unwrap().first().map(|c| c.clone())
+                            new_cases.first().map(|c| c.clone())
                         };
                         if let Some(ref case) = selected_case {
                             println!("Selected case: {}", &case.key);
@@ -707,10 +708,22 @@ impl App {
                                         .swap_buffers()
                                         .expect("Failed to swap back-buffer");
                                 }
-                            }
+                                // Check the time and try to compare to the request time
+                                if request_response.len() > 0 {
+                                    log::trace!("Request len: {}", request_response.len());
+                                    let req = request_response.remove(0);
+                                    log::trace!("Gussing frame time is {:?}", req.elapsed());
+                                }                             }
                         }
                     }
-                    WindowMessage::ContextShared => {}
+                    WindowMessage::Timer(_) => {
+                        if dirty {
+                            let state = interaction_state.get_render_state(false);
+                            self.try_send_message(DataMessage::NewState(state));
+                            dirty = false;
+                            request_response.push(Instant::now());
+                        }
+                    }
                     WindowMessage::PipelineError => {
                         log::error!("Got error from pipeline, exiting");
                         *flow = ControlFlow::Exit;
@@ -748,27 +761,11 @@ impl App {
                         }
                     }
                     // Check if we need to update the dirty flag.
-                    dirty = dirty || interaction_state.update();
+                    dirty = interaction_state.update() || dirty;
                 }
-                Event::MainEventsCleared => {
-                    if dirty {
-                        let state = interaction_state.get_render_state(false);
-                        self.try_send_message(DataMessage::NewState(state));
-                        dirty = false;
-                    }
-
-                    if time.elapsed().as_secs_f32() > 10_f32 && dump {
-                        gst::debug_bin_to_dot_file(
-                            &self.pipeline,
-                            DebugGraphDetails::ALL,
-                            "graph_3.ts",
-                        );
-                        dump = false;
-                    }
-                }
+                Event::MainEventsCleared => {}
                 Event::RedrawRequested(_) => {
                     // Nothing to do right now
-                    // Maybe send the server request here?
                 }
                 _ => (),
             }
