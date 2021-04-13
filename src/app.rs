@@ -203,7 +203,7 @@ impl App {
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! d3d11upload ! d3d11convert ! d3d11videosink sync=false";
         let pipeline_description =
-            "rtph264depay name=depay ! h264parse name=parse disable-passthrough=true ! avdec_h264 name=decoder ! glupload name=upload ! glcolorconvert name=convert ! appsink name=appsink";
+            "rtph264depay name=depay ! h264parse name=parse ! avdec_h264 name=decoder ! glupload name=upload ! glcolorconvert name=convert ! appsink name=appsink sync=false async=false";
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! glupload ! glcolorconvert ! glimagesinkelement sync=false max-lateness=1 processing-deadline=1 enable-last-sample=false";
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! fakesink sync=false";
