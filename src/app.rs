@@ -7,7 +7,7 @@ use glutin::{
     ContextWrapper, NotCurrent, PossiblyCurrent,
 };
 // use event_loop::{ControlFlow, EventLoopProxy};
-use gst::prelude::*;
+use gst::{gst_sys::GstStructure, prelude::*, Object, StructureRef};
 use gst_gl::GLContextExt;
 use gst_video::VideoOverlayExtManual;
 use gstreamer as gst;
@@ -93,6 +93,45 @@ impl App {
         webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
         webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
 
+        // TODO: Remove
+
+        // webrtcbin
+        //     .set_property("latency", &200_u32)
+        //     .expect("Failed to setr latency");
+
+        webrtcbin
+            .connect("on-new-transceiver", false, move |vals| {
+                println!("Got transceiver callback");
+
+                let t = vals[1]
+                    .get::<gst_webrtc::WebRTCRTPTransceiver>()
+                    .expect("Not the type")
+                    .expect("Trans is None");
+                dbg!(&t);
+                t.set_property("do-nack", &true)
+                    .expect("Failed to set nack");
+                None
+            })
+            .expect("Failed to attach handler");
+
+        // let agent = webrtcbin
+        //     .get_property("ice-agent")
+        //     .expect("Failed to get ice-agent");
+
+        // let agent = agent.get::<Object>().expect("Failed to get Object").expect("Object is None");
+        // agent.set_property("ice-udp", &false).expect("Failed to set ice-udp");
+
+        // let rtpbin = pipeline
+        //     .get_by_name("rtpbin")
+        //     .expect("Failed to get rtpbin");
+        // rtpbin
+        //     .set_property("do-retransmission", &true)
+        //     .expect("Failed to set retransmission");
+        // rtpbin
+        //     .set_property("drop-on-latency", &true)
+        //     .expect("Failed to set drop on latency");
+        // END TODO
+
         // Create oneshot channels for delayed init data.
 
         let inner = AppInner {
@@ -164,7 +203,7 @@ impl App {
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! d3d11upload ! d3d11convert ! d3d11videosink sync=false";
         let pipeline_description =
-            "rtph264depay name=depay ! h264parse name=parse ! avdec_h264 name=decoder ! glupload name=upload ! glcolorconvert name=convert ! appsink name=appsink";
+            "rtph264depay name=depay ! h264parse name=parse disable-passthrough=true ! avdec_h264 name=decoder ! glupload name=upload ! glcolorconvert name=convert ! appsink name=appsink";
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! glupload ! glcolorconvert ! glimagesinkelement sync=false max-lateness=1 processing-deadline=1 enable-last-sample=false";
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! fakesink sync=false";
@@ -261,6 +300,9 @@ impl App {
                     sdp_mline_index,
                     candidate,
                 };
+
+                dbg!(&msg);
+
                 app.send_app_message(msg)
                     .expect("Failed to send ice candidate");
 
@@ -696,6 +738,14 @@ impl App {
                                 own_context,
                                 self.get_pipe_context(),
                             ));
+
+                            // TODO: Remove
+                            gst::debug_bin_to_dot_file(
+                                &self.pipeline,
+                                gst::DebugGraphDetails::all(),
+                                "wsclient",
+                            )
+                            // END TODO
                         }
                         // Handle all new samples!
                         if let Some(sample) = self.get_last_sample() {
@@ -713,7 +763,20 @@ impl App {
                                     log::trace!("Request len: {}", request_response.len());
                                     let req = request_response.remove(0);
                                     log::trace!("Gussing frame time is {:?}", req.elapsed());
-                                }                             }
+                                }
+                            }
+
+                            let e = self
+                                .pipeline
+                                .get_by_name("rtpjitterbuffer0")
+                                .expect("Failed to get jitterbuffer");
+                            let stats = e.get_property("stats").expect("Failed to get stats");
+
+                            let s = stats
+                                .get::<&StructureRef>()
+                                .expect("Failed to get structure")
+                                .expect("Structure is None");
+                            dbg!(s);
                         }
                     }
                     WindowMessage::Timer(_) => {

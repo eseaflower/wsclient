@@ -115,7 +115,6 @@ impl Quad {
                 tex_coords: x.tex_coords,
             })
             .collect();
-        //        dbg!(&v);
         v
     }
     pub fn index_ref(&self) -> &[u16] {
