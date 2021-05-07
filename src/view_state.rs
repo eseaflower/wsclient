@@ -6,6 +6,7 @@ pub struct ViewState {
     pub pos: Position,
     pub frame: Option<u32>,
     pub wl: Wl,
+    pub cursor: Option<(f32, f32)>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 #[serde(rename_all = "lowercase")]
@@ -38,6 +39,7 @@ impl ViewState {
                 width: 1.0,
                 center: 1.0,
             },
+            cursor: None,
         }
     }
 
@@ -51,6 +53,7 @@ impl ViewState {
                     width: 1.0,
                     center: 1.0,
                 },
+                cursor: None,
             });
         }
         None
@@ -73,6 +76,7 @@ impl ViewState {
             pos,
             frame: self.frame,
             wl: self.wl,
+            cursor: None,
         }
     }
 
@@ -104,7 +108,6 @@ impl ViewState {
     pub fn set_frame(&mut self, frame: Option<u32>) {
         self.frame = frame;
     }
-
 
     pub fn update_center(&mut self, scale: f32) {
         self.wl.center *= scale;

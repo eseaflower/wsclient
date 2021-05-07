@@ -7,6 +7,7 @@ use view_state::Zoom;
 
 use crate::{
     vertex::{self, Quad},
+    view::View,
     view_state::{self, ViewState},
 };
 
@@ -293,10 +294,53 @@ impl GlRenderer {
             sync_meta.wait(&self.own_ctx);
             if let Some(image_texture) = frame.get_texture_id(0) {
                 log::trace!("Got frame texture with id {}", image_texture);
+                println!("Got frame texture with id {}", image_texture);
+
                 // Compute the vertices to use
                 let image_vertices = self.quad.get_vertex(&self.state);
                 self.draw(image_vertices, image_texture);
             }
+        }
+    }
+
+    pub fn render_views(&mut self, views: Vec<&View>) {
+        unsafe {
+            self.bindings.Enable(gl::SCISSOR_TEST);
+        }
+
+        for v in views {
+            // Check if we have a sample
+            if let Some(sample) = v.get_current_sample() {
+                let layout = v.get_layout();
+                let size = (layout.width as f32, layout.height as f32);
+                self.set_viewport_size(size);
+                self.set_frame_size(size);
+                unsafe {
+                    {
+                        // Set transformation
+                        self.bindings.Viewport(
+                            layout.x as _,
+                            layout.y as _,
+                            layout.width as _,
+                            layout.height as _,
+                        );
+                        // Set scissor box
+                        self.bindings.Scissor(
+                            layout.x as _,
+                            layout.y as _,
+                            layout.width as _,
+                            layout.height as _,
+                        );
+                    }
+                }
+
+                // Do the render
+                println!("View {} is rendering", v.video_id());
+                self.render(sample);
+            }
+        }
+        unsafe {
+            self.bindings.Disable(gl::SCISSOR_TEST);
         }
     }
 }

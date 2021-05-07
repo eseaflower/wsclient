@@ -65,6 +65,7 @@ pub enum AppMessage {
     GetCases,
     Case(Vec<CaseMeta>),
     Close,
+    Reconfigure(Vec<ClientConfig>),
 }
 
 impl TryFrom<Message> for AppMessage {
@@ -84,15 +85,31 @@ impl TryFrom<AppMessage> for Message {
     }
 }
 
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub struct LayoutRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct PaneState {
+    pub layout: LayoutRect,
+    pub view_state: ViewState,
+    pub key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct RenderState {
-    pub view_state: ViewState,
-    pub key: Option<String>,
+    pub panes: Vec<PaneState>,
+    pub layout: LayoutRect,
     pub seq: u64,
     pub timestamp: f32,
     pub snapshot: bool,
-    pub cursor: Option<(f32, f32)>,
 }
 
 impl RenderState {
@@ -103,20 +120,21 @@ impl RenderState {
         }
     }
 }
-
 impl Default for RenderState {
     fn default() -> Self {
         Self {
-            view_state: ViewState::new(),
-            key: None,
+            panes: vec![PaneState {
+                view_state: ViewState::new(),
+                key: None,
+                layout: LayoutRect::default(),
+            }],
+            layout: LayoutRect::default(),
             seq: 0,
             timestamp: 0.0_f32,
             snapshot: false,
-            cursor: None,
         }
     }
 }
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DataMessage {

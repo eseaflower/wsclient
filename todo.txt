@@ -1,5 +1,0 @@
-* Get case-structure back from server via ws.
-* Select any case and create a default state, send to server
-* Setup gstreamer
-* Setup webrtc ice/sdp handling (callbacks to the werbrtcbin)
-* Handle incomming video stream, just autovideosink?

@@ -74,9 +74,6 @@ impl ElementTimer {
             source_id,
         }
     }
-    pub fn single(name: &str, element: gst::Element) -> Self {
-        Self::new(name, element.clone(), element)
-    }
 }
 
 impl Drop for ElementTimer {

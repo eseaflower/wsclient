@@ -1,4 +1,4 @@
-use crate::{message::RenderState, view_state::ViewState};
+use crate::view_state::ViewState;
 use glutin::{
     dpi::PhysicalPosition,
     event::{ElementState, ModifiersState, MouseButton},
@@ -13,6 +13,7 @@ pub enum InteractionMode {
     Wl,
 }
 
+#[derive(Debug)]
 pub struct InteractionState {
     anchor: Option<PhysicalPosition<f64>>,
     mouse_position: Option<PhysicalPosition<f64>>,
@@ -26,8 +27,6 @@ pub struct InteractionState {
 
     mode: Option<InteractionMode>,
 
-    seq: u64,
-    case_key: Option<String>,
     image_count: Option<usize>,
     viewstate: ViewState,
 }
@@ -44,15 +43,12 @@ impl InteractionState {
             middle_mouse: false,
             ctrl_pressed: false,
             mode: None,
-            seq: 0,
-            case_key: None,
             image_count: None,
             viewstate: ViewState::new(),
         }
     }
 
-    pub fn set_case(&mut self, key: String, image_count: usize) {
-        self.case_key = Some(key);
+    pub fn set_image_count(&mut self, image_count: usize) {
         self.image_count = Some(image_count);
         self.viewstate.set_frame(Some(0));
     }
@@ -163,6 +159,7 @@ impl InteractionState {
         });
 
         let mut updated = false;
+        self.viewstate.cursor = None;
         if let Some(mode) = self.mode {
             match mode {
                 InteractionMode::Zoom => {
@@ -176,6 +173,9 @@ impl InteractionState {
                     if let Some(movement) = movement {
                         let delta = (movement.0 as f32, movement.1 as f32);
                         self.viewstate.update_position(delta);
+                        // If we are paning set the cursor,
+                        self.viewstate.cursor =
+                            self.mouse_position.map(|p| (p.x as f32, p.y as f32));
                         updated = true;
                     }
                 }
@@ -212,20 +212,8 @@ impl InteractionState {
         updated || mode_change
     }
 
-    pub fn get_render_state(&mut self, snapshot: bool) -> RenderState {
-        let cursor = match self.mode {
-            Some(InteractionMode::Pan) => self.anchor.map(|p| (p.x as f32, p.y as f32)),
-            _ => None,
-        };
-        self.seq += 1;
-        RenderState {
-            view_state: self.viewstate.clone(),
-            key: self.case_key.clone(),
-            seq: self.seq,
-            timestamp: 0_f32,
-            snapshot,
-            cursor,
-        }
+    pub fn get_render_state(&mut self) -> ViewState {
+        self.viewstate.clone()
     }
 }
 

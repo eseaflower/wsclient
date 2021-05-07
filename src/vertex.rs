@@ -55,12 +55,6 @@ impl Quad {
         }
     }
 
-    pub fn with_init(viewport_size: (f32, f32)) -> Self {
-        let mut quad = Quad::default();
-        quad.set_viewport_size(viewport_size);
-        quad
-    }
-
     fn compute_image_to_screen(&self, state: &ViewState) -> ViewTransform {
         let mut transform = match state.zoom {
             Zoom::Fit(mag) => {
@@ -116,17 +110,6 @@ impl Quad {
             })
             .collect();
         v
-    }
-    pub fn index_ref(&self) -> &[u16] {
-        &self.indexes
-    }
-
-    pub fn vertex_count(&self) -> u32 {
-        self.vertices.len() as u32
-    }
-
-    pub fn index_count(&self) -> u32 {
-        self.indexes.len() as u32
     }
 
     pub fn map_texture_coords(&mut self, img_dims: (f32, f32), tex_dims: (f32, f32)) {

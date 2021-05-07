@@ -1,3 +1,4 @@
+use event::{ElementState, VirtualKeyCode};
 use glutin::{
     dpi::PhysicalSize,
     event::{self, Event, WindowEvent},
@@ -7,9 +8,8 @@ use glutin::{
     ContextWrapper, NotCurrent, PossiblyCurrent,
 };
 // use event_loop::{ControlFlow, EventLoopProxy};
-use gst::{gst_sys::GstStructure, prelude::*, Object, StructureRef};
-use gst_gl::GLContextExt;
-use gst_video::VideoOverlayExtManual;
+use gst::{prelude::*, StructureRef};
+use gst_gl::{ContextGLExt, GLContextExt};
 use gstreamer as gst;
 use gstreamer_app as gst_app;
 use gstreamer_gl as gst_gl;
@@ -19,33 +19,23 @@ use gstreamer_webrtc as gst_webrtc;
 
 use anyhow::Result;
 use futures::channel::mpsc::UnboundedSender;
-use raw_window_handle::HasRawWindowHandle;
-use window_message::WindowMessage;
-// use winit::{
-//     dpi::{PhysicalSize, Size},
-//     event::{ElementState, Event, WindowEvent},
-//     event_loop::{self, EventLoop},
-//     window::WindowBuilder,
-// };
-
 use std::{
-    convert::TryFrom,
     ops::Deref,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use window_message::WindowMessage;
 
-use crate::window_message;
+use crate::message::AppMessage;
 use crate::{
     glvideo::GlRenderer,
     util::{element_timer::ElementTimer, window_timer::start_window_timer},
+    view::ViewControl,
     AppConfig,
 };
-use crate::{
-    interaction::InteractionState,
-    message::{self, AppMessage, DataMessage},
-};
-use message::{ClientConfig, ViewportSize};
+use crate::{view::View, window_message};
+
+// use super::view::ViewCollection;
 
 #[derive(Debug)]
 struct SharedState {
@@ -61,8 +51,9 @@ pub struct AppInner {
     signaller: UnboundedSender<AppMessage>,
     webrtcbin: gst::Element,
     pipeline: gst::Pipeline,
-    datachannel: Mutex<Option<gst_webrtc::WebRTCDataChannel>>,
+    datachannels: Mutex<Vec<gst_webrtc::WebRTCDataChannel>>,
     shared: Mutex<SharedState>,
+    view_control: ViewControl,
 }
 
 impl Deref for App {
@@ -77,7 +68,7 @@ impl Drop for AppInner {
     }
 }
 impl App {
-    pub fn new(signaller: UnboundedSender<AppMessage>) -> Self {
+    pub fn new(signaller: UnboundedSender<AppMessage>, view_control: ViewControl) -> Self {
         // let pipeline = gst::parse_launch(
         //     "videotestsrc pattern=ball is-live=true ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtcbin.
         //                         webrtcbin name=webrtcbin").expect("FOOOO");
@@ -107,19 +98,12 @@ impl App {
                     .get::<gst_webrtc::WebRTCRTPTransceiver>()
                     .expect("Not the type")
                     .expect("Trans is None");
-                dbg!(&t);
+                // dbg!(&t);
                 t.set_property("do-nack", &true)
                     .expect("Failed to set nack");
                 None
             })
             .expect("Failed to attach handler");
-
-        // let agent = webrtcbin
-        //     .get_property("ice-agent")
-        //     .expect("Failed to get ice-agent");
-
-        // let agent = agent.get::<Object>().expect("Failed to get Object").expect("Object is None");
-        // agent.set_property("ice-udp", &false).expect("Failed to set ice-udp");
 
         // let rtpbin = pipeline
         //     .get_by_name("rtpbin")
@@ -128,30 +112,52 @@ impl App {
         //     .set_property("do-retransmission", &true)
         //     .expect("Failed to set retransmission");
         // rtpbin
-        //     .set_property("drop-on-latency", &true)
+        //     .set_property("drop-on-latency", &false)
         //     .expect("Failed to set drop on latency");
-        // END TODO
+        // rtpbin
+        //     .set_property("do-lost", &true)
+        //     .expect("Failed to set do-lost");
+        // rtpbin.set_property_from_str("buffer-mode", "slave");
 
-        // Create oneshot channels for delayed init data.
+        // END TODO
 
         let inner = AppInner {
             signaller,
             pipeline,
             webrtcbin,
-            datachannel: Mutex::new(None),
+            datachannels: Mutex::new(Vec::new()),
             shared: Mutex::new(SharedState {
                 proxy: None,
                 samples: Vec::default(),
                 timers: Vec::default(),
             }),
+            view_control,
         };
         let app = App(Arc::new(inner));
 
+        app.setup_bus_handling();
         app.setup_ice_callback();
         app.setup_stream_callback();
         app.setup_datachannel();
 
         app
+    }
+
+    fn setup_bus_handling(&self) {
+        let bus = self.pipeline.get_bus().expect("Failed to get pipeline bus");
+        let weak_app = Arc::downgrade(&self.0);
+        bus.connect_message(move |_bus, msg| {
+            match msg.view() {
+                gst::MessageView::Error(e) => {
+                    log::error!("Pipeline error: {:?}", e);
+                    // Post an error message on the message thread.
+                    if let Some(app) = weak_app.upgrade().map(App) {
+                        app.send_window_message(WindowMessage::PipelineError);
+                    }
+                }
+                _ => {}
+            }
+        });
     }
 
     fn setup_datachannel(&self) {
@@ -160,11 +166,27 @@ impl App {
             .connect("on-data-channel", false, move |values| {
                 log::debug!("Got datachannel callback");
                 if let Some(app) = weak_app.upgrade().map(App) {
-                    let dc = values[1]
+                    let datachannel = values[1]
                         .get::<gst_webrtc::WebRTCDataChannel>()
                         .expect("Failed to get datachannel from values")
                         .unwrap();
-                    *app.datachannel.lock().unwrap() = Some(dc);
+                    let label = datachannel
+                        .get_property_label()
+                        .expect("No datachannel label")
+                        .to_string();
+                    dbg!(&label);
+                    // Find the view that wants this datachannel
+                    // let view = app.views.iter().find(|v| v.data_id() == &label);
+                    let view = app.view_control.find_by_label(&label);
+                    match view {
+                        Some(view) => {
+                            log::debug!("Setting datachannel with label {}", label);
+                            view.set_datachannel(datachannel);
+                        }
+                        None => {
+                            log::warn!("Got unexpected datachannel with label {}", label);
+                        }
+                    }
                 } else {
                     log::error!("Failed to upgrade weak_app");
                 }
@@ -190,48 +212,77 @@ impl App {
                 log::warn!("Failed to upgrade weak_app");
             }
         });
+
+        self.webrtcbin.connect_pad_removed(|_, _| {
+            println!("Pad removed...");
+        });
     }
 
     fn on_incomming_stream(&self, pad: &gst::Pad) -> Result<()> {
         if pad.get_direction() != gst::PadDirection::Src {
             return Ok(());
         }
-        log::debug!("Linking new stream");
 
+        let transceiver = pad
+            .get_property("transceiver")
+            .expect("Failed to get pad property")
+            .get::<gst_webrtc::WebRTCRTPTransceiver>()
+            .expect("Failed to cast prop")
+            .expect("Transceiver was empty");
+
+        let mlineidx = transceiver.get_property_mlineindex();
+
+        let view = self
+            .view_control
+            .find_by_id(mlineidx as usize)
+            .expect(&format!(
+                "Failed to find active view with index {}",
+                mlineidx
+            ));
+
+        log::debug!("Linking new stream with id {}", mlineidx);
         // let pipeline_description = "identity name=ident ! application/x-rtp, media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264, payload=(int)96
         //  ! rtph264depay name=depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! d3d11upload ! d3d11videosink";
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! d3d11upload ! d3d11convert ! d3d11videosink sync=false";
-        let pipeline_description =
-            "rtph264depay name=depay ! h264parse name=parse ! avdec_h264 name=decoder ! glupload name=upload ! glcolorconvert name=convert ! appsink name=appsink sync=false async=false";
+        let pipeline_template =
+            "rtph264depay name=depay{idx} ! h264parse name=parse{idx} ! avdec_h264 name=decoder{idx} ! glupload name=upload{idx} ! glcolorconvert name=convert{idx} ! appsink name=appsink{idx}";
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! glupload ! glcolorconvert ! glimagesinkelement sync=false max-lateness=1 processing-deadline=1 enable-last-sample=false";
-
+        let pipeline_description = pipeline_template.replace("{idx}", &mlineidx.to_string());
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! fakesink sync=false";
-        let decodebin = gst::parse_bin_from_description(pipeline_description, true)
+        let decodebin = gst::parse_bin_from_description(&pipeline_description, true)
             .expect("Failed to parse decodebin");
 
+        let appsink_name = format!("appsink{}", mlineidx);
+        dbg!(pipeline_description);
+        dbg!(&appsink_name);
+
         let appsink = decodebin
-            .get_by_name("appsink")
+            .get_by_name(&appsink_name)
             .expect("Failed to get appsink");
         let appsink = appsink
             .downcast::<gst_app::AppSink>()
             .expect("Failed to cast to appsink");
 
-        let weak_app = Arc::downgrade(&self.0);
+        let weak_view = Arc::downgrade(&view.0);
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |appsink| {
-                    if let Some(app) = weak_app.upgrade().map(App) {
+                    if let Some(view) = weak_view.upgrade().map(View) {
                         log::trace!("Got sample callback");
+                        println!("Got sample from mline {}", mlineidx);
                         let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                        app.queue_sample(sample);
+                        // Push the sample to the view.
+                        view.push_sample(sample);
                         Ok(gst::FlowSuccess::Ok)
                     } else {
+                        log::error!("Failed to upgrade view");
                         Err(gst::FlowError::Error)
                     }
                 })
                 .build(),
         );
+
         // Set caps
         appsink
             .set_property("enable-last-sample", &false)
@@ -259,9 +310,6 @@ impl App {
         self.pipeline
             .add(&decodebin)
             .expect("Failed to add decodebin element to pipeline");
-        decodebin
-            .sync_state_with_parent()
-            .expect("Failed to sync decodebin with parent");
 
         let sinkpad = decodebin
             .get_static_pad("sink")
@@ -269,12 +317,18 @@ impl App {
         pad.link(&sinkpad)
             .expect("Failed to link incomming stream to decodebin");
 
-        let depay = decodebin.get_by_name("parse").expect("Failed to get depay");
+        decodebin
+            .sync_state_with_parent()
+            .expect("Failed to sync decodebin with parent");
+
+        let depay = decodebin
+            .get_by_name(&format!("parse{}", mlineidx))
+            .expect("Failed to get depay");
         let convert = decodebin
-            .get_by_name("convert")
+            .get_by_name(&format!("convert{}", mlineidx))
             .expect("Failed to get appsink");
 
-        let timer = ElementTimer::new("depay-convert", depay, convert);
+        let timer = ElementTimer::new(&format!("depay-convert{}", mlineidx), depay, convert);
         {
             let mut shared = self.shared.lock().unwrap();
             shared.timers.push(timer);
@@ -411,83 +465,34 @@ impl App {
     fn send_window_message(&self, msg: WindowMessage) {
         // Acquire the mutex, then send the message
         let shared = self.shared.lock().unwrap();
-        Self::internal_send_window_message(shared.proxy.as_ref(), msg);
-    }
-
-    // Sends the window message while holding the mutex
-    fn internal_send_window_message(
-        proxy: Option<&EventLoopProxy<WindowMessage>>,
-        msg: WindowMessage,
-    ) {
-        if let Some(proxy) = proxy {
+        if let Some(proxy) = shared.proxy.as_ref() {
             proxy
                 .send_event(msg)
                 .expect("Failed to send window message");
         }
     }
 
-    // Queue the sample we received
-    fn queue_sample(&self, sample: gst::Sample) {
-        let mut shared = self.shared.lock().unwrap();
-        // Insert the sample
-        shared.samples.push(sample);
-        Self::internal_send_window_message(shared.proxy.as_ref(), WindowMessage::NewSample);
-    }
-
-    // Drain all queued samples, and return the last.
-    fn get_last_sample(&self) -> Option<gst::Sample> {
-        let mut shared = self.shared.lock().unwrap();
-        // Consume all queued samples, and return the last (if any)
-        shared.samples.drain(..).last()
-    }
-
     fn send_app_message(&self, msg: AppMessage) -> Result<()> {
         self.signaller.unbounded_send(msg).map_err(|e| e.into())
     }
 
-    fn try_send_message(&self, msg: DataMessage) -> bool {
-        if let Some(ref datachannel) = *self.datachannel.lock().unwrap() {
-            match datachannel.get_property_ready_state() {
-                gstreamer_webrtc::WebRTCDataChannelState::Open => {
-                    if let Ok(msg) = String::try_from(msg) {
-                        log::trace!("DC sending: {}", &msg);
-                        datachannel.send_string(Some(&msg));
-                        true
-                    } else {
-                        false
-                    }
-                }
-                _ => false,
-            }
-        } else {
-            false
-        }
-    }
-
-    fn connect(&self, config: &AppConfig) {
-        let cfg = ClientConfig {
-            id: "NativeClient".to_string(),
-            viewport: ViewportSize {
-                width: config.viewport_size.0,
-                height: config.viewport_size.1,
-            },
-            bitrate: config.bitrate,
-            gpu: config.gpu,
-            preset: config.preset.clone(),
-            lossless: config.lossless,
-            video_scaling: config.video_scaling,
-            fullrange: !config.narrow,
-        };
+    fn connect(&self) {
+        // Get the config from the views, and connect
+        let cfg = self.view_control.get_config();
         log::info!("Connecting with {:?}", &cfg);
 
-        let msg = AppMessage::Connect(vec![cfg]);
+        let msg = AppMessage::Connect(cfg);
         self.send_app_message(msg)
             .expect("Failed to send connect message");
     }
 
     fn create_shared_context(
         ctx: ContextWrapper<NotCurrent, Window>,
-    ) -> (ContextWrapper<NotCurrent, Window>, gst_gl::GLContext) {
+    ) -> (
+        ContextWrapper<NotCurrent, Window>,
+        gst_gl::GLContext,
+        gst_gl::GLDisplay,
+    ) {
         let ctx = unsafe { ctx.make_current().expect("Failed to make context current") };
 
         // Build gstreamer sharable context
@@ -540,7 +545,7 @@ impl App {
                 .expect("Failed to uncurrent the context")
         };
 
-        (ctx, shared_context)
+        (ctx, shared_context, gl_display)
     }
 
     fn create_renderer(
@@ -557,10 +562,15 @@ impl App {
     }
 
     fn get_pipe_context(&self) -> gst_gl::GLContext {
-        let e = self
-            .pipeline
-            .get_by_name("upload")
-            .expect("Failed to get upload element");
+        // Look for any upload{idx} element that might exist
+        let n_views = self.view_control.get_n_views();
+        let e = (0..n_views)
+            .find_map(|i| self.pipeline.get_by_name(&format!("upload{}", i)))
+            .expect("Failed to find upload element");
+
+        // self.pipeline
+        //     .get_by_name("upload")
+        //     .expect("Failed to get upload element");
 
         e.get_property("context")
             .expect("No property 'context' found")
@@ -569,14 +579,46 @@ impl App {
             .expect("Context is empty")
     }
 
+    fn set_shared_context(
+        &self,
+        shared_context: gst_gl::GLContext,
+        shared_display: gst_gl::GLDisplay,
+    ) {
+        // We set the context/display that should be wrapped by the gl-plugins.
+
+        let display_context = gst::Context::new(*gst_gl::GL_DISPLAY_CONTEXT_TYPE, true);
+        display_context.set_gl_display(&shared_display);
+        self.pipeline.set_context(&display_context);
+
+        let mut gl_context = gst::Context::new("gst.gl.app_context", true);
+        {
+            let context = gl_context.get_mut().unwrap();
+            let s = context.get_mut_structure();
+            s.set("context", &shared_context);
+        }
+        self.pipeline.set_context(&gl_context);
+    }
+
+    fn set_event_proxy(&self, proxy: EventLoopProxy<WindowMessage>) {
+        let mut shared = self.shared.lock().unwrap();
+        self.view_control.set_event_proxy(&proxy);
+        shared.proxy = Some(proxy);
+    }
+
     pub fn main_loop(self, config: AppConfig) -> Result<()> {
         log::debug!("Starting app main loop on current thread");
+
+        // Arrange the views horizontally
+        self.view_control.arrange_horizontal();
+        let view_bounds = self.view_control.get_layout();
+
+        dbg!(&view_bounds);
 
         let event_loop = EventLoop::<WindowMessage>::with_user_event();
         let size = config.viewport_size;
         let window_builder = WindowBuilder::new().with_inner_size(PhysicalSize {
-            width: size.0,
-            height: size.1,
+            width: view_bounds.width,
+            height: view_bounds.height,
         });
 
         let main_context = glutin::ContextBuilder::new()
@@ -587,87 +629,24 @@ impl App {
             .expect("Failed to build GL main context");
 
         // Create GStreamer context
-        let (main_context, own_context) = Self::create_shared_context(main_context);
+        let (main_context, own_context, shared_display) = Self::create_shared_context(main_context);
 
         // Set the event loop proxy on App
-        {
-            let mut shared = self.shared.lock().unwrap();
-            shared.proxy = Some(event_loop.create_proxy());
-        }
+        self.set_event_proxy(event_loop.create_proxy());
+        self.set_shared_context(own_context.clone(), shared_display);
+
         // Start the pipeline
         self.pipeline
             .set_state(gst::State::Playing)
             .expect("Failed to set the pipeline to playing");
 
         // Connect to server
-        self.connect(&config);
+        self.connect();
 
         // We really need to ensure that connect() has been handled before we send another
         // ws-request, otherwise the server might error out.
         self.send_app_message(AppMessage::GetCases)
             .expect("Failed to send GetCases");
-
-        // Set a bus-sync handler for setting the window handle to the videorenderer
-
-        // Handle GStreamer bus error messages
-        let bus = self.pipeline.get_bus().expect("Failed to get pipeline bus");
-        let window_handle = match main_context.window().raw_window_handle() {
-            raw_window_handle::RawWindowHandle::Windows(h) => h.hwnd as usize,
-            _ => anyhow::bail!("Unexpected window handle"),
-        };
-
-        let weak_app = Arc::downgrade(&self.0);
-        let shared_context = own_context.clone();
-        bus.set_sync_handler(move |_b, msg| {
-            // Check if this is the message we are looking for
-            if gst_video::is_video_overlay_prepare_window_handle_message(msg) {
-                log::debug!(
-                    "Got prepare window handle message. Current handle is {:?}",
-                    window_handle
-                );
-                let src = msg.get_src().expect("Failed to get message source");
-                let oly = src
-                    .dynamic_cast::<gst_video::VideoOverlay>()
-                    .expect("Failed to convert src to video overlay");
-
-                unsafe { oly.set_window_handle(window_handle) };
-
-                return gst::BusSyncReply::Drop;
-            } else {
-                match msg.view() {
-                    gst::MessageView::NeedContext(ctx) => {
-                        let context_type = ctx.get_context_type();
-                        if context_type == "gst.gl.app_context" {
-                            if let Some(el) =
-                                msg.get_src().map(|s| s.downcast::<gst::Element>().unwrap())
-                            {
-                                log::debug!("Got request for a shared app context");
-                                let mut context = gst::Context::new(context_type, true);
-                                {
-                                    let context = context.get_mut().unwrap();
-                                    let s = context.get_mut_structure();
-                                    s.set("context", &shared_context);
-                                }
-                                el.set_context(&context);
-                            }
-                        }
-                    }
-                    gst::MessageView::Error(e) => {
-                        log::error!("Pipeline error: {:?}", e);
-                        // Post an error message on the message thread.
-                        if let Some(app) = weak_app.upgrade().map(App) {
-                            app.send_window_message(WindowMessage::PipelineError);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            gst::BusSyncReply::Pass
-        });
-
-        let mut interaction_state = InteractionState::new();
-        let mut dirty = false;
 
         // This is the context until we have the first sample, then we know
         // that context sharing is done and we can current the context.
@@ -709,11 +688,12 @@ impl App {
                         };
                         if let Some(ref case) = selected_case {
                             println!("Selected case: {}", &case.key);
-                            interaction_state.set_case(case.key.clone(), case.number_of_images);
-                            dirty = true;
+                            self.view_control
+                                .set_case(case.key.clone(), case.number_of_images);
                         }
                     }
-                    WindowMessage::NewSample => {
+                    WindowMessage::Redraw(view_index) => {
+                        println!("Got redraw idx {}", view_index);
                         // When we get the first sample we can current our context
                         // and build the renderer, since now context-sharing should
                         // be set up.
@@ -740,52 +720,42 @@ impl App {
                             ));
 
                             // TODO: Remove
-                            gst::debug_bin_to_dot_file(
-                                &self.pipeline,
-                                gst::DebugGraphDetails::all(),
-                                "wsclient",
-                            )
+                            // gst::debug_bin_to_dot_file(
+                            //     &self.pipeline,
+                            //     gst::DebugGraphDetails::all(),
+                            //     "wsclient",
+                            // )
                             // END TODO
                         }
-                        // Handle all new samples!
-                        if let Some(sample) = self.get_last_sample() {
-                            log::trace!("Main loop got a sample");
-                            if let Some(ref renderer) = renderer {
-                                renderer.render(sample);
-                                if let Some(ref main_context) = main_context {
-                                    // Swap back-buffer
-                                    main_context
-                                        .swap_buffers()
-                                        .expect("Failed to swap back-buffer");
-                                }
-                                // Check the time and try to compare to the request time
-                                if request_response.len() > 0 {
-                                    log::trace!("Request len: {}", request_response.len());
-                                    let req = request_response.remove(0);
-                                    log::trace!("Gussing frame time is {:?}", req.elapsed());
-                                }
-                            }
 
-                            let e = self
-                                .pipeline
-                                .get_by_name("rtpjitterbuffer0")
-                                .expect("Failed to get jitterbuffer");
-                            let stats = e.get_property("stats").expect("Failed to get stats");
+                        log::trace!("Main loop got a sample");
 
-                            let s = stats
-                                .get::<&StructureRef>()
-                                .expect("Failed to get structure")
-                                .expect("Structure is None");
-                            dbg!(s);
+                        renderer.as_mut().map(|r| {
+                            let views = self.view_control.get_active();
+                            r.render_views(views);
+                        });
+                        main_context
+                            .as_ref()
+                            .map(|c| c.swap_buffers().expect("Failed to swap back-buffer"));
+
+                        if request_response.len() > 0 {
+                            log::trace!("Request len: {}", request_response.len());
+                            let req = request_response.remove(0);
+                            log::trace!("Gussing frame time is {:?}", req.elapsed());
                         }
+                        let e = self
+                            .pipeline
+                            .get_by_name("rtpjitterbuffer0")
+                            .expect("Failed to get jitterbuffer");
+                        let stats = e.get_property("stats").expect("Failed to get stats");
+
+                        let _s = stats
+                            .get::<&StructureRef>()
+                            .expect("Failed to get structure")
+                            .expect("Structure is None");
                     }
                     WindowMessage::Timer(_) => {
-                        if dirty {
-                            let state = interaction_state.get_render_state(false);
-                            self.try_send_message(DataMessage::NewState(state));
-                            dirty = false;
-                            request_response.push(Instant::now());
-                        }
+                        self.view_control.push_state();
                     }
                     WindowMessage::PipelineError => {
                         log::error!("Got error from pipeline, exiting");
@@ -793,38 +763,48 @@ impl App {
                     }
                 },
                 Event::WindowEvent { event, .. } => {
-                    match event {
-                        WindowEvent::CloseRequested => *flow = ControlFlow::Exit,
-                        WindowEvent::CursorMoved { position, .. } => {
-                            interaction_state.handle_move(position);
+                    let handled = match event {
+                        WindowEvent::CloseRequested => {
+                            *flow = ControlFlow::Exit;
+                            true
                         }
-                        WindowEvent::MouseInput { button, state, .. } => {
-                            interaction_state.handle_mouse_input(button, state);
+                        WindowEvent::KeyboardInput { input, .. }
+                            if input.state == ElementState::Pressed =>
+                        {
+                            match input.virtual_keycode {
+                                Some(VirtualKeyCode::S) => {
+                                    println!("S is pressed, setting single view");
+                                    self.view_control.set_active(&[0]);
+                                    self.view_control.arrange_horizontal();
+                                    true
+                                }
+                                Some(VirtualKeyCode::P) => {
+                                    println!("P is pressed, setting two views.");
+                                    self.view_control.set_active(&[0, 1]);
+                                    self.view_control.arrange_horizontal();
+                                    true
+                                }
+                                _ => false,
+                            }
                         }
-                        WindowEvent::ModifiersChanged(state) => {
-                            interaction_state.handle_modifiers(state);
-                        }
-                        WindowEvent::MouseWheel { delta, .. } => {
-                            let delta = match delta {
-                                event::MouseScrollDelta::LineDelta(_, y) => y,
-                                event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
-                            };
-                            interaction_state.handle_mouse_wheel(delta);
-                        }
-                        _ => {}
+                        _ => false,
+                    };
+
+                    if !handled {
+                        // Let the views handle the event
+                        self.view_control.handle_window_event(&event);
                     }
 
                     // Check if we should hide the cursor.
                     if let Some(ref main_context) = main_context {
                         let window = main_context.window();
-                        if interaction_state.hide_cursor() {
+                        if self.view_control.hide_cursor() {
                             window.set_cursor_visible(false);
                         } else {
                             window.set_cursor_visible(true);
                         }
                     }
-                    // Check if we need to update the dirty flag.
-                    dirty = interaction_state.update() || dirty;
+                    self.view_control.update();
                 }
                 Event::MainEventsCleared => {}
                 Event::RedrawRequested(_) => {

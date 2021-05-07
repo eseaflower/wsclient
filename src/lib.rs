@@ -12,6 +12,7 @@ use futures::{
     future, Sink, SinkExt, Stream, StreamExt, TryStreamExt,
 };
 use message::AppMessage;
+use view::ViewControl;
 
 mod app;
 mod bindings;
@@ -20,6 +21,7 @@ mod interaction;
 mod message;
 mod util;
 mod vertex;
+mod view;
 mod view_state;
 mod window_message;
 
@@ -132,8 +134,10 @@ pub fn run(config: AppConfig) -> Result<()> {
     // Init GStreamer
     gstreamer::init().expect("Failed to initialize GStreamer");
 
+    // Create the views that we want connected.
+    let view_control = ViewControl::new(2, &config);
     let (snd, rcv) = unbounded::<AppMessage>();
-    let app = App::new(snd);
+    let app = App::new(snd, view_control);
 
     let signal_thread = run_signalling(config.ws_url.clone(), Arc::downgrade(&app.0), rcv);
 
