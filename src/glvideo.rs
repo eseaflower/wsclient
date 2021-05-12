@@ -7,7 +7,7 @@ use view_state::Zoom;
 
 use crate::{
     vertex::{self, Quad},
-    view::View,
+    view::ViewControl,
     view_state::{self, ViewState},
 };
 
@@ -28,6 +28,7 @@ pub struct GlRenderer {
     state: ViewState,
     own_ctx: gst_gl::GLContext,
     pipe_ctx: gst_gl::GLContext,
+    window_size: (u32, u32),
 }
 
 impl GlRenderer {
@@ -72,6 +73,7 @@ impl GlRenderer {
             state,
             own_ctx,
             pipe_ctx,
+            window_size: (0, 0),
         }
     }
 
@@ -201,6 +203,7 @@ impl GlRenderer {
         // Activate and bind the textures
         self.bindings.ActiveTexture(gl::TEXTURE0); // Activate texture unit 0
         self.bindings.BindTexture(gl::TEXTURE_2D, image_texture);
+
         // self.bindings.ActiveTexture(gl::TEXTURE0 + 1);
         // self.bindings.BindTexture(gl::TEXTURE_2D, lut_texture);
 
@@ -245,15 +248,19 @@ impl GlRenderer {
 
     pub fn draw(&self, image_vertices: Vec<vertex::Vertex>, image_texture: u32) {
         unsafe {
-            self.bindings.ClearColor(1.0, 0.0, 0.0, 1.0);
-            self.bindings.Clear(gl::COLOR_BUFFER_BIT);
-
             // Draw the image
             self.draw_image(&image_vertices, image_texture);
             // Place to draw the cursor (remember alpha blend)?
             // if let Some(pointer_vertices) = pointer_vertices {
             //     self.draw_pointer(&pointer_vertices);
             // }
+        }
+    }
+
+    pub fn clear(&self) {
+        unsafe {
+            self.bindings.ClearColor(1.0, 0.0, 0.0, 1.0);
+            self.bindings.Clear(gl::COLOR_BUFFER_BIT);
         }
     }
 
@@ -273,7 +280,6 @@ impl GlRenderer {
             .get_caps()
             .and_then(|caps| gst_video::VideoInfo::from_caps(caps).ok())
             .unwrap();
-
         {
             // Set a sync point on the pipeline context. Sync point informs us
             // of when the texture from the pipe is ready.
@@ -303,44 +309,58 @@ impl GlRenderer {
         }
     }
 
-    pub fn render_views(&mut self, views: Vec<&View>) {
+    pub fn render_views(&mut self, control: &ViewControl) {
         unsafe {
             self.bindings.Enable(gl::SCISSOR_TEST);
         }
 
-        for v in views {
-            // Check if we have a sample
-            if let Some(sample) = v.get_current_sample() {
-                let layout = v.get_layout();
-                let size = (layout.width as f32, layout.height as f32);
-                self.set_viewport_size(size);
-                self.set_frame_size(size);
-                unsafe {
-                    {
-                        // Set transformation
-                        self.bindings.Viewport(
-                            layout.x as _,
-                            layout.y as _,
-                            layout.width as _,
-                            layout.height as _,
-                        );
-                        // Set scissor box
-                        self.bindings.Scissor(
-                            layout.x as _,
-                            layout.y as _,
-                            layout.width as _,
-                            layout.height as _,
-                        );
-                    }
-                }
+        // Get the position of the ViewControl
+        let control_layout = control.get_layout();
 
-                // Do the render
-                println!("View {} is rendering", v.video_id());
-                self.render(sample);
+        let view_samples =
+            control.active_map(|view| (view.get_current_sample(), view.get_layout()));
+
+        for (sample, view_layout) in view_samples {
+            // Check if we have a sample
+
+            let view_size = (view_layout.width as f32, view_layout.height as f32);
+            self.set_viewport_size(view_size);
+            self.set_frame_size(view_size);
+
+            // Compute the postion for the view
+            let top = control_layout.y + view_layout.y;
+            let left = control_layout.x + view_layout.x;
+            unsafe {
+                // Translate to GL coordinates. This can be negative if the window
+                // is smaller than the views.
+                let gl_y = self.window_size.1 as i32 - (top + view_layout.height) as i32;
+                // Set transformation
+                self.bindings.Viewport(
+                    left as _,
+                    gl_y as _,
+                    view_layout.width as _,
+                    view_layout.height as _,
+                );
+                // Set scissor box
+                self.bindings.Scissor(
+                    left as _,
+                    gl_y as _,
+                    view_layout.width as _,
+                    view_layout.height as _,
+                );
             }
+
+            // Always clear the viewport.
+            self.clear();
+            // Do the render, if there is a sample
+            sample.map(|sample| self.render(sample));
         }
         unsafe {
             self.bindings.Disable(gl::SCISSOR_TEST);
         }
+    }
+
+    pub fn set_window_size(&mut self, size: (u32, u32)) {
+        self.window_size = size;
     }
 }

@@ -135,9 +135,8 @@ pub fn run(config: AppConfig) -> Result<()> {
     gstreamer::init().expect("Failed to initialize GStreamer");
 
     // Create the views that we want connected.
-    let view_control = ViewControl::new(2, &config);
     let (snd, rcv) = unbounded::<AppMessage>();
-    let app = App::new(snd, view_control);
+    let app = App::new(snd);
 
     let signal_thread = run_signalling(config.ws_url.clone(), Arc::downgrade(&app.0), rcv);
 

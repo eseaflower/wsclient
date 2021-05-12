@@ -20,28 +20,29 @@ use gstreamer_webrtc as gst_webrtc;
 use anyhow::Result;
 use futures::channel::mpsc::UnboundedSender;
 use std::{
+    collections::HashMap,
     ops::Deref,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use window_message::WindowMessage;
+use window_message::{ViewSample, WindowMessage};
 
-use crate::message::AppMessage;
+use crate::message::{AppMessage, ClientConfig, LayoutRect};
+use crate::window_message;
 use crate::{
     glvideo::GlRenderer,
-    util::{element_timer::ElementTimer, window_timer::start_window_timer},
+    util::{element_timer::ElementTimer, window_timer::WindowTimer},
     view::ViewControl,
     AppConfig,
 };
-use crate::{view::View, window_message};
 
 // use super::view::ViewCollection;
 
 #[derive(Debug)]
 struct SharedState {
     proxy: Option<EventLoopProxy<WindowMessage>>,
-    samples: Vec<gst::Sample>,
     timers: Vec<ElementTimer>,
+    samples: HashMap<usize, Option<gst::Sample>>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,9 +52,7 @@ pub struct AppInner {
     signaller: UnboundedSender<AppMessage>,
     webrtcbin: gst::Element,
     pipeline: gst::Pipeline,
-    datachannels: Mutex<Vec<gst_webrtc::WebRTCDataChannel>>,
     shared: Mutex<SharedState>,
-    view_control: ViewControl,
 }
 
 impl Deref for App {
@@ -68,13 +67,7 @@ impl Drop for AppInner {
     }
 }
 impl App {
-    pub fn new(signaller: UnboundedSender<AppMessage>, view_control: ViewControl) -> Self {
-        // let pipeline = gst::parse_launch(
-        //     "videotestsrc pattern=ball is-live=true ! vp8enc deadline=1 ! rtpvp8pay pt=96 ! webrtcbin.
-        //                         webrtcbin name=webrtcbin").expect("FOOOO");
-
-        // let pipeline = pipeline.downcast::<gst::Pipeline>().expect("slkjgfslkdjf");
-        // let webrtcbin = pipeline.get_by_name("webrtcbin").expect("ldfskjg");
+    pub fn new(signaller: UnboundedSender<AppMessage>) -> Self {
         let pipeline = gst::Pipeline::new(None);
         let webrtcbin = gst::ElementFactory::make("webrtcbin", Some("webrtcbin"))
             .expect("Failed to create webrtcbin");
@@ -87,7 +80,7 @@ impl App {
         // TODO: Remove
 
         // webrtcbin
-        //     .set_property("latency", &200_u32)
+        //     .set_property("latency", &50_u32)
         //     .expect("Failed to setr latency");
 
         webrtcbin
@@ -98,21 +91,26 @@ impl App {
                     .get::<gst_webrtc::WebRTCRTPTransceiver>()
                     .expect("Not the type")
                     .expect("Trans is None");
-                // dbg!(&t);
                 t.set_property("do-nack", &true)
                     .expect("Failed to set nack");
                 None
             })
             .expect("Failed to attach handler");
 
-        // let rtpbin = pipeline
-        //     .get_by_name("rtpbin")
-        //     .expect("Failed to get rtpbin");
+        let rtpbin = pipeline
+            .get_by_name("rtpbin")
+            .expect("Failed to get rtpbin");
+        // rtpbin
+        //     .set_property("latency", &0_u32)
+        //     .expect("Failed to set latency");
+        println!("Setting 'synced' rtpjitterbuffer mode");
+        rtpbin.set_property_from_str("buffer-mode", "synced");
+
         // rtpbin
         //     .set_property("do-retransmission", &true)
         //     .expect("Failed to set retransmission");
         // rtpbin
-        //     .set_property("drop-on-latency", &false)
+        //     .set_property("drop-on-latency", &true)
         //     .expect("Failed to set drop on latency");
         // rtpbin
         //     .set_property("do-lost", &true)
@@ -125,13 +123,11 @@ impl App {
             signaller,
             pipeline,
             webrtcbin,
-            datachannels: Mutex::new(Vec::new()),
             shared: Mutex::new(SharedState {
                 proxy: None,
-                samples: Vec::default(),
                 timers: Vec::default(),
+                samples: HashMap::default(),
             }),
-            view_control,
         };
         let app = App(Arc::new(inner));
 
@@ -170,23 +166,12 @@ impl App {
                         .get::<gst_webrtc::WebRTCDataChannel>()
                         .expect("Failed to get datachannel from values")
                         .unwrap();
-                    let label = datachannel
-                        .get_property_label()
-                        .expect("No datachannel label")
-                        .to_string();
-                    dbg!(&label);
-                    // Find the view that wants this datachannel
-                    // let view = app.views.iter().find(|v| v.data_id() == &label);
-                    let view = app.view_control.find_by_label(&label);
-                    match view {
-                        Some(view) => {
-                            log::debug!("Setting datachannel with label {}", label);
-                            view.set_datachannel(datachannel);
-                        }
-                        None => {
-                            log::warn!("Got unexpected datachannel with label {}", label);
-                        }
-                    }
+                    let shared = app.shared.lock().unwrap();
+                    shared.proxy.as_ref().map(|proxy| {
+                        proxy
+                            .send_event(WindowMessage::Datachannel(datachannel))
+                            .expect("Failed to send datachannel")
+                    });
                 } else {
                     log::error!("Failed to upgrade weak_app");
                 }
@@ -232,21 +217,13 @@ impl App {
 
         let mlineidx = transceiver.get_property_mlineindex();
 
-        let view = self
-            .view_control
-            .find_by_id(mlineidx as usize)
-            .expect(&format!(
-                "Failed to find active view with index {}",
-                mlineidx
-            ));
-
         log::debug!("Linking new stream with id {}", mlineidx);
         // let pipeline_description = "identity name=ident ! application/x-rtp, media=(string)video, clock-rate=(int)90000, encoding-name=(string)H264, payload=(int)96
         //  ! rtph264depay name=depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! d3d11upload ! d3d11videosink";
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! d3d11upload ! d3d11convert ! d3d11videosink sync=false";
         let pipeline_template =
-            "rtph264depay name=depay{idx} ! h264parse name=parse{idx} ! avdec_h264 name=decoder{idx} ! glupload name=upload{idx} ! glcolorconvert name=convert{idx} ! appsink name=appsink{idx}";
+            "rtph264depay name=depay{idx} ! h264parse name=parse{idx} ! openh264dec name=decoder{idx} ! glupload name=upload{idx} ! glcolorconvert name=convert{idx} ! appsink name=appsink{idx}";
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! glupload ! glcolorconvert ! glimagesinkelement sync=false max-lateness=1 processing-deadline=1 enable-last-sample=false";
         let pipeline_description = pipeline_template.replace("{idx}", &mlineidx.to_string());
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! fakesink sync=false";
@@ -254,9 +231,6 @@ impl App {
             .expect("Failed to parse decodebin");
 
         let appsink_name = format!("appsink{}", mlineidx);
-        dbg!(pipeline_description);
-        dbg!(&appsink_name);
-
         let appsink = decodebin
             .get_by_name(&appsink_name)
             .expect("Failed to get appsink");
@@ -264,16 +238,21 @@ impl App {
             .downcast::<gst_app::AppSink>()
             .expect("Failed to cast to appsink");
 
-        let weak_view = Arc::downgrade(&view.0);
+        let weak_app = Arc::downgrade(&self.0);
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |appsink| {
-                    if let Some(view) = weak_view.upgrade().map(View) {
-                        log::trace!("Got sample callback");
-                        println!("Got sample from mline {}", mlineidx);
+                    if let Some(app) = weak_app.upgrade().map(App) {
                         let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                        // Push the sample to the view.
-                        view.push_sample(sample);
+                        let mut shared = app.shared.lock().unwrap();
+                        // Set the sample in the slot for the mlineidx.
+                        shared.samples.insert(mlineidx as usize, Some(sample));
+
+                        shared.proxy.as_ref().map(|proxy| {
+                            proxy
+                                .send_event(WindowMessage::Sample(mlineidx as usize))
+                                .expect("Failed to send sample")
+                        });
                         Ok(gst::FlowSuccess::Ok)
                     } else {
                         log::error!("Failed to upgrade view");
@@ -337,6 +316,16 @@ impl App {
         Ok(())
     }
 
+    pub fn get_sample(&self, index: usize) -> Option<ViewSample> {
+        let mut shared = self.shared.lock().unwrap();
+        if let Some(sample) = shared.samples.get_mut(&index) {
+            // Take the last sample and move it out
+            sample.take().map(|sample| ViewSample { id: index, sample })
+        } else {
+            None
+        }
+    }
+
     fn setup_ice_callback(&self) {
         let weak_app = Arc::downgrade(&self.0);
         self.webrtcbin
@@ -354,8 +343,6 @@ impl App {
                     sdp_mline_index,
                     candidate,
                 };
-
-                dbg!(&msg);
 
                 app.send_app_message(msg)
                     .expect("Failed to send ice candidate");
@@ -476,9 +463,9 @@ impl App {
         self.signaller.unbounded_send(msg).map_err(|e| e.into())
     }
 
-    fn connect(&self) {
+    fn connect(&self, cfg: Vec<ClientConfig>) {
         // Get the config from the views, and connect
-        let cfg = self.view_control.get_config();
+        // let cfg = self.view_control.get_config();
         log::info!("Connecting with {:?}", &cfg);
 
         let msg = AppMessage::Connect(cfg);
@@ -548,29 +535,11 @@ impl App {
         (ctx, shared_context, gl_display)
     }
 
-    fn create_renderer(
-        ctx: &ContextWrapper<PossiblyCurrent, Window>,
-        frame_size: (u32, u32),
-        window_size: (u32, u32),
-        own_ctx: gst_gl::GLContext,
-        pipe_ctx: gst_gl::GLContext,
-    ) -> GlRenderer {
-        let mut renderer = GlRenderer::new(|name| ctx.get_proc_address(name), own_ctx, pipe_ctx);
-        renderer.set_viewport_size((window_size.0 as f32, window_size.1 as f32));
-        renderer.set_frame_size((frame_size.0 as f32, frame_size.1 as f32));
-        renderer
-    }
-
-    fn get_pipe_context(&self) -> gst_gl::GLContext {
-        // Look for any upload{idx} element that might exist
-        let n_views = self.view_control.get_n_views();
-        let e = (0..n_views)
-            .find_map(|i| self.pipeline.get_by_name(&format!("upload{}", i)))
-            .expect("Failed to find upload element");
-
-        // self.pipeline
-        //     .get_by_name("upload")
-        //     .expect("Failed to get upload element");
+    fn get_pipe_context(&self, idx: usize) -> gst_gl::GLContext {
+        let e = self
+            .pipeline
+            .get_by_name(&format!("upload{}", idx))
+            .expect("Failed to get upload element");
 
         e.get_property("context")
             .expect("No property 'context' found")
@@ -601,24 +570,50 @@ impl App {
 
     fn set_event_proxy(&self, proxy: EventLoopProxy<WindowMessage>) {
         let mut shared = self.shared.lock().unwrap();
-        self.view_control.set_event_proxy(&proxy);
         shared.proxy = Some(proxy);
+    }
+
+    fn finalize_contexts(
+        ctx: ContextWrapper<NotCurrent, Window>,
+        own_context: gst_gl::GLContext,
+        pipe_context: gst_gl::GLContext,
+    ) -> (ContextWrapper<PossiblyCurrent, Window>, GlRenderer) {
+        // Current the context
+        let main_context = unsafe { ctx.make_current().expect("Failed to current context") };
+        log::debug!(
+            "Using window with settings: {:?}",
+            main_context.get_pixel_format()
+        );
+
+        log::debug!("Main context has been currented");
+        let mut renderer = GlRenderer::new(
+            |name| main_context.get_proc_address(name),
+            own_context,
+            pipe_context,
+        );
+        // Get the size of the window
+        let inner_size = main_context.window().inner_size();
+        renderer.set_window_size((inner_size.width, inner_size.height));
+        (main_context, renderer)
     }
 
     pub fn main_loop(self, config: AppConfig) -> Result<()> {
         log::debug!("Starting app main loop on current thread");
 
-        // Arrange the views horizontally
-        self.view_control.arrange_horizontal();
-        let view_bounds = self.view_control.get_layout();
-
-        dbg!(&view_bounds);
-
+        let mut view_control = ViewControl::new(2, &config);
+        let window_size = (config.viewport_size.0, config.viewport_size.1);
         let event_loop = EventLoop::<WindowMessage>::with_user_event();
-        let size = config.viewport_size;
         let window_builder = WindowBuilder::new().with_inner_size(PhysicalSize {
-            width: view_bounds.width,
-            height: view_bounds.height,
+            width: window_size.0,
+            height: window_size.1,
+        });
+
+        // Set the size of the view control to match the window.
+        view_control.set_layout(LayoutRect {
+            x: 0,
+            y: 0,
+            width: window_size.0,
+            height: window_size.1,
         });
 
         let main_context = glutin::ContextBuilder::new()
@@ -641,7 +636,7 @@ impl App {
             .expect("Failed to set the pipeline to playing");
 
         // Connect to server
-        self.connect();
+        self.connect(view_control.get_config());
 
         // We really need to ensure that connect() has been handled before we send another
         // ws-request, otherwise the server might error out.
@@ -655,15 +650,18 @@ impl App {
         let mut renderer: Option<GlRenderer> = None;
         let mut own_context: Option<gst_gl::GLContext> = Some(own_context);
 
-        let mut request_response: Vec<Instant> = Vec::new();
-
         // Start a timer to get reliable callbacks on the event loop
         let interactions_per_second = 60;
         let request_timeout_ms = (1000_f32 / interactions_per_second as f32).floor() as u64;
-        start_window_timer(
+        let timer = WindowTimer::new(
             event_loop.create_proxy(),
             Duration::from_millis(request_timeout_ms),
         );
+
+        // Start a repeat timer that fires with the request timeout
+        let duration = Duration::from_millis(1);
+        timer.repeat(WindowMessage::Timer(duration), duration);
+        let mut layout_pending = false;
 
         event_loop.run(move |event, _target, flow| {
             // The actual rendering seems not dependant on this loop.
@@ -688,74 +686,53 @@ impl App {
                         };
                         if let Some(ref case) = selected_case {
                             println!("Selected case: {}", &case.key);
-                            self.view_control
-                                .set_case(case.key.clone(), case.number_of_images);
+                            view_control.set_case(case.key.clone(), case.number_of_images);
                         }
                     }
-                    WindowMessage::Redraw(view_index) => {
-                        println!("Got redraw idx {}", view_index);
+                    WindowMessage::Datachannel(datachannel) => {
+                        view_control.set_datachannel(datachannel);
+                    }
+                    WindowMessage::Sample(index) => {
                         // When we get the first sample we can current our context
                         // and build the renderer, since now context-sharing should
                         // be set up.
                         if let Some(ctx) = tmp_ctx.take() {
                             // Move the tmp_ctx into the main context after setting it current
-                            main_context = Some(unsafe {
-                                ctx.make_current().expect("Failed to current context")
-                            });
-
-                            log::debug!(
-                                "Using window with settings: {:?}",
-                                main_context.as_ref().unwrap().get_pixel_format()
+                            let (context, gl_rend) = Self::finalize_contexts(
+                                ctx,
+                                own_context.take().expect("Context is empty"),
+                                self.get_pipe_context(index),
                             );
-
-                            let own_context = own_context.take().expect("Context is empty");
-
-                            log::debug!("Main context has been currented");
-                            renderer = Some(Self::create_renderer(
-                                main_context.as_ref().unwrap(),
-                                size,
-                                size,
-                                own_context,
-                                self.get_pipe_context(),
-                            ));
-
-                            // TODO: Remove
-                            // gst::debug_bin_to_dot_file(
-                            //     &self.pipeline,
-                            //     gst::DebugGraphDetails::all(),
-                            //     "wsclient",
-                            // )
-                            // END TODO
+                            // Assign the instances that we will use through out.
+                            main_context = Some(context);
+                            renderer = Some(gl_rend);
                         }
 
                         log::trace!("Main loop got a sample");
+                        // Get the latest sample for view 'index'
+                        self.get_sample(index)
+                            .map(|sample| view_control.push_sample(sample));
 
-                        renderer.as_mut().map(|r| {
-                            let views = self.view_control.get_active();
-                            r.render_views(views);
+                        // Request a redraw
+                        main_context.as_ref().map(|c| {
+                            c.window().request_redraw();
                         });
-                        main_context
-                            .as_ref()
-                            .map(|c| c.swap_buffers().expect("Failed to swap back-buffer"));
-
-                        if request_response.len() > 0 {
-                            log::trace!("Request len: {}", request_response.len());
-                            let req = request_response.remove(0);
-                            log::trace!("Gussing frame time is {:?}", req.elapsed());
-                        }
-                        let e = self
-                            .pipeline
-                            .get_by_name("rtpjitterbuffer0")
-                            .expect("Failed to get jitterbuffer");
-                        let stats = e.get_property("stats").expect("Failed to get stats");
-
-                        let _s = stats
-                            .get::<&StructureRef>()
-                            .expect("Failed to get structure")
-                            .expect("Structure is None");
                     }
                     WindowMessage::Timer(_) => {
-                        self.view_control.push_state();
+                        view_control.push_state();
+                    }
+                    WindowMessage::UpdateLayout => {
+                        layout_pending = false;
+                        main_context.as_ref().map(|c| {
+                            let size = c.window().inner_size();
+                            // Update the layout to fill the entire window.
+                            view_control.set_layout(LayoutRect {
+                                x: 0,
+                                y: 0,
+                                width: size.width,
+                                height: size.height,
+                            });
+                        });
                     }
                     WindowMessage::PipelineError => {
                         log::error!("Got error from pipeline, exiting");
@@ -768,47 +745,54 @@ impl App {
                             *flow = ControlFlow::Exit;
                             true
                         }
-                        WindowEvent::KeyboardInput { input, .. }
-                            if input.state == ElementState::Pressed =>
-                        {
-                            match input.virtual_keycode {
-                                Some(VirtualKeyCode::S) => {
-                                    println!("S is pressed, setting single view");
-                                    self.view_control.set_active(&[0]);
-                                    self.view_control.arrange_horizontal();
-                                    true
-                                }
-                                Some(VirtualKeyCode::P) => {
-                                    println!("P is pressed, setting two views.");
-                                    self.view_control.set_active(&[0, 1]);
-                                    self.view_control.arrange_horizontal();
-                                    true
-                                }
-                                _ => false,
+                        WindowEvent::Resized(size) => {
+                            // Also update the renderer with the new window size
+                            renderer
+                                .as_mut()
+                                .map(|r| r.set_window_size((size.width, size.height)));
+
+                            view_control.set_window_size((size.width, size.height));
+                            if !layout_pending {
+                                layout_pending = true;
+                                timer.once(WindowMessage::UpdateLayout, Duration::from_millis(500));
                             }
+
+                            // Make sure the GL-surface is resized
+                            main_context.as_ref().map(|c| {
+                                c.resize(size);
+                                c.window().request_redraw();
+                            });
+                            true
                         }
                         _ => false,
                     };
 
                     if !handled {
                         // Let the views handle the event
-                        self.view_control.handle_window_event(&event);
+                        view_control.handle_window_event(&event);
                     }
 
                     // Check if we should hide the cursor.
                     if let Some(ref main_context) = main_context {
                         let window = main_context.window();
-                        if self.view_control.hide_cursor() {
+                        if view_control.hide_cursor() {
                             window.set_cursor_visible(false);
                         } else {
                             window.set_cursor_visible(true);
                         }
                     }
-                    self.view_control.update();
+                    view_control.update();
                 }
                 Event::MainEventsCleared => {}
                 Event::RedrawRequested(_) => {
-                    // Nothing to do right now
+                    // Render the views
+                    renderer.as_mut().map(|r| {
+                        r.render_views(&view_control);
+                    });
+                    // Swap back buffer
+                    main_context
+                        .as_ref()
+                        .map(|c| c.swap_buffers().expect("Failed to swap back-buffer"));
                 }
                 _ => (),
             }
