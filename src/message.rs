@@ -41,6 +41,35 @@ impl Default for ClientConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct Protocols {
+    pub layout: Vec<LayoutCfg>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PartitionCfg {
+    P1x1,
+    P2x2,
+    P3x3,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct LayoutCfg {
+    pub name: String,
+    pub partition: PartitionCfg,
+    pub panes: Vec<PaneCfg>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct PaneCfg {
+    pub case: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct CaseMeta {
@@ -63,7 +92,7 @@ pub enum AppMessage {
         sdp: String,
     },
     GetCases,
-    Case(Vec<CaseMeta>),
+    Case((Option<Protocols>, Vec<CaseMeta>)),
     Close,
     Reconfigure(Vec<ClientConfig>),
 }

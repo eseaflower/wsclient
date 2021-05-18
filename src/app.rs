@@ -600,7 +600,9 @@ impl App {
     pub fn main_loop(self, config: AppConfig) -> Result<()> {
         log::debug!("Starting app main loop on current thread");
 
-        let mut view_control = ViewControl::new(2, &config);
+        let mut view_control = ViewControl::new(1, &config);
+        view_control.partition(1, 1);
+
         let window_size = (config.viewport_size.0, config.viewport_size.1);
         let event_loop = EventLoop::<WindowMessage>::with_user_event();
         let window_builder = WindowBuilder::new().with_inner_size(PhysicalSize {
@@ -671,23 +673,11 @@ impl App {
             // Try to get the video overlay and move it into a normal reference
             match event {
                 Event::UserEvent(wm) => match wm {
-                    WindowMessage::Cases(new_cases) => {
-                        let case_keys: Vec<_> = new_cases.iter().map(|c| c.key.clone()).collect();
-                        let cases_string = case_keys.join("\n");
-                        println!("Known cases:\n{}", cases_string);
+                    WindowMessage::Cases((protocols, cases)) => {
+                        view_control.set_case_meta(protocols, cases);
 
-                        let selected_case = if let Some(ref wanted) = config.case_key {
-                            new_cases
-                                .iter()
-                                .find(|c| *c.key == *wanted)
-                                .map(|c| c.clone())
-                        } else {
-                            new_cases.first().map(|c| c.clone())
-                        };
-                        if let Some(ref case) = selected_case {
-                            println!("Selected case: {}", &case.key);
-                            view_control.set_case(case.key.clone(), case.number_of_images);
-                        }
+                        println!("Known cases:\n{}", view_control.get_case_string());
+                        println!("Known protocols:\n{}", view_control.get_protocol_string());
                     }
                     WindowMessage::Datachannel(datachannel) => {
                         view_control.set_datachannel(datachannel);

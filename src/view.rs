@@ -14,10 +14,35 @@ use gstreamer_webrtc as gst_webrtc;
 
 use crate::{
     interaction::InteractionState,
-    message::{ClientConfig, DataMessage, LayoutRect, PaneState, RenderState, ViewportSize},
+    message::{
+        CaseMeta, ClientConfig, DataMessage, LayoutRect, PaneState, Protocols, RenderState,
+        ViewportSize,
+    },
+    view,
     window_message::ViewSample,
     AppConfig,
 };
+
+fn tile(view_size: (u32, u32), rows: usize, columns: usize) -> Vec<LayoutRect> {
+    // Align to 4 pixels
+    let view_width = view_size.0 as f32 / columns as f32;
+    let view_width = ((view_width / 4_f32).floor() * 4_f32) as u32;
+    let view_height = view_size.1 as f32 / rows as f32;
+    let view_height = ((view_height / 4_f32).floor() * 4_f32) as u32;
+
+    let mut layouts = Vec::with_capacity(rows * columns);
+    for y_idx in 0..rows as u32 {
+        for x_idx in 0..columns as u32 {
+            layouts.push(LayoutRect {
+                x: x_idx * view_width,
+                y: y_idx * view_height,
+                width: view_width,
+                height: view_height,
+            });
+        }
+    }
+    layouts
+}
 
 #[derive(Debug)]
 pub struct Pane {
@@ -115,9 +140,9 @@ impl Pane {
     //     })
     // }
 
-    pub fn set_case(&mut self, case_key: String, number_of_images: usize) {
-        self.case_key = Some(case_key);
-        self.interaction.set_image_count(number_of_images);
+    pub fn set_case(&mut self, case: CaseMeta) {
+        self.case_key = Some(case.key);
+        self.interaction.set_image_count(case.number_of_images);
         self.dirty = true;
     }
 
@@ -195,7 +220,7 @@ impl View {
             datachannel: None,
             bitrate,
             dirty: false,
-            panes: vec![Pane::default(), Pane::default()],
+            panes: vec![Pane::default()],
             focus: None,
             seq: 0,
         }
@@ -302,38 +327,23 @@ impl View {
         self.layout
     }
 
-    pub fn arrange_horizontal(&mut self) {
-        if self.panes.len() <= 0 {
-            log::warn!("No panes when trying to arrange");
-        }
-        println!("Got pane arrange!!!!!");
-        let pane_width = self.layout.width as f32 / self.panes.len() as f32;
-        // Align to 4 pixels.
-        let pane_width = ((pane_width / 4_f32).floor() * 4_f32) as u32;
-        let pane_height = self.layout.height;
-
-        let mut curr_x = 0;
-        for pane in self.panes.iter_mut() {
-            {
-                pane.set_layout(LayoutRect {
-                    x: curr_x,
-                    y: 0,
-                    width: pane_width,
-                    height: pane_height,
-                });
-
-                curr_x += pane_width;
-            }
-        }
-    }
-
     pub fn set_layout(&mut self, layout: LayoutRect) {
         self.layout = layout.clone();
-        self.arrange_horizontal();
         // Remove the stale sample
         self.current_sample.take();
         println!("Setting dirty on view");
         self.dirty = true;
+    }
+
+    pub fn partition(&mut self, rows: usize, columns: usize) {
+        // Make sure we have the correct amount of panes
+        self.panes.resize_with(rows * columns, || Pane::default());
+        let view_size = (self.layout.width, self.layout.height);
+        let layouts = tile(view_size, rows, columns);
+        for (pane, layout) in self.panes.iter_mut().zip(layouts.into_iter()) {
+            dbg!(&layout);
+            pane.set_layout(layout);
+        }
     }
 
     pub fn contains(&self, position: &PhysicalPosition<f64>) -> bool {
@@ -419,19 +429,11 @@ impl View {
         }
     }
 
-    pub fn set_case(&mut self, case_key: String, number_of_images: usize) {
+    pub fn set_case(&mut self, case: CaseMeta) {
         for pane in &mut self.panes {
-            pane.set_case(case_key.clone(), number_of_images);
+            pane.set_case(case.clone());
         }
     }
-}
-
-#[derive(Debug)]
-pub enum Fill {
-    None,
-    Vertical,
-    Horizontal,
-    Full,
 }
 
 #[derive(Debug)]
@@ -440,6 +442,10 @@ pub struct ViewControl {
     active: Vec<usize>,
     focus: Option<usize>,
     layout: LayoutRect,
+    case_key: Option<String>,
+    protocols: Option<Protocols>,
+    cases: Option<Vec<CaseMeta>>,
+    partition: (usize, usize),
 }
 
 impl ViewControl {
@@ -478,35 +484,10 @@ impl ViewControl {
                 width: 0,
                 height: 0,
             },
-        }
-    }
-
-    pub fn arrange_horizontal(&mut self) {
-        let active = &self.active;
-        if active.len() <= 0 {
-            log::warn!("No views active when trying to arrange");
-        }
-        let view_width = self.layout.width as f32 / active.len() as f32;
-        // Align to 4 pixels.
-        let view_width = ((view_width / 4_f32).floor() * 4_f32) as u32;
-        let view_height = self.layout.height;
-
-        let mut curr_x = 0;
-        for idx in &self.active {
-            {
-                let view = self
-                    .views
-                    .get_mut(*idx)
-                    .expect("Active view index not found");
-                view.set_layout(LayoutRect {
-                    x: curr_x,
-                    y: 0,
-                    width: view_width,
-                    height: view_height,
-                });
-
-                curr_x += view_width;
-            }
+            case_key: config.case_key.clone(),
+            cases: None,
+            protocols: None,
+            partition: (1, 1),
         }
     }
 
@@ -592,13 +573,11 @@ impl ViewControl {
                     Some(VirtualKeyCode::S) => {
                         println!("S is pressed, setting single view");
                         self.set_active(&[0]);
-                        self.arrange_horizontal();
                         true
                     }
                     Some(VirtualKeyCode::P) => {
                         println!("P is pressed, setting two views.");
                         self.set_active(&[0, 1]);
-                        self.arrange_horizontal();
                         true
                     }
                     _ => false,
@@ -631,32 +610,27 @@ impl ViewControl {
         self.active_apply_mut(View::push_state);
     }
 
-    pub fn set_case(&mut self, case_key: String, number_of_images: usize) {
+    pub fn set_case(&mut self, case: CaseMeta) {
         // For now set on all active views
-        self.active_apply_mut(|view| view.set_case(case_key.clone(), number_of_images));
+        self.active_apply_mut(|view| view.set_case(case.clone()));
     }
 
     pub fn set_active(&mut self, idxs: &[usize]) {
-        {
-            self.active = idxs
-                .iter()
-                .filter_map(|idx| {
-                    if *idx < self.views.len() {
-                        Some(*idx)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-        }
-        self.arrange_horizontal();
+        self.active = idxs
+            .iter()
+            .filter_map(|idx| {
+                if *idx < self.views.len() {
+                    Some(*idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
     }
 
     pub fn set_layout(&mut self, layout: LayoutRect) {
-        {
-            self.layout = layout;
-        }
-        self.arrange_horizontal();
+        self.layout = layout;
+        self.update_partitions();
     }
 
     pub fn set_window_size(&mut self, size: (u32, u32)) {
@@ -687,6 +661,79 @@ impl ViewControl {
             view.push_sample(sample.sample);
         } else {
             log::error!("Failed to find view with index {}", sample.id);
+        }
+    }
+
+    pub fn get_case_string(&self) -> String {
+        if let Some(cases) = &self.cases {
+            let case_keys: Vec<_> = cases.iter().map(|c| c.key.clone()).collect();
+            case_keys.join("\n")
+        } else {
+            String::from("<No cases loaded>")
+        }
+    }
+
+    pub fn get_protocol_string(&self) -> String {
+        if let Some(protocols) = &self.protocols {
+            let layout_names: Vec<_> = protocols.layout.iter().map(|l| l.name.clone()).collect();
+            layout_names.join("\n")
+        } else {
+            String::from("<No protocols loaded>")
+        }
+    }
+
+    pub fn set_case_meta(&mut self, protocols: Option<Protocols>, cases: Vec<CaseMeta>) {
+        self.cases = Some(cases);
+        self.protocols = protocols;
+
+        let selected_case = if let Some(ref wanted) = self.case_key {
+            self.cases
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|c| *c.key == *wanted)
+                .map(|c| c.clone())
+        } else {
+            self.cases.as_ref().unwrap().first().map(|c| c.clone())
+        };
+        if let Some(case) = selected_case {
+            println!("Selected case: {}", &case.key);
+            self.set_case(case);
+        }
+    }
+
+    pub fn partition(&mut self, rows: usize, columns: usize) {
+        self.partition = (rows, columns);
+        self.update_partitions();
+    }
+
+    pub fn update_partitions(&mut self) {
+        let (rows, columns) = self.partition;
+        // Check if we can split each partition to its own view.
+        // Otherwise check if each row can use a separate view
+        // In the last case we use a single view with all partitions.
+        let (rows, columns, (pane_rows, pane_columns)) = if rows * columns <= self.views.len() {
+            println!("Each partition gets its own view");
+            // Each view is partitioned 1x1
+            (rows, columns, (1, 1))
+        } else if rows <= self.views.len() {
+            println!("Each row gets its own view");
+            // Use row views, each partitioned into 1xcolumns
+            (rows, 1, (1, columns))
+        } else {
+            println!("All partitions in a single view");
+            // The view is partitioned rows x columns
+            (1, 1, (rows, columns))
+        };
+
+        let view_size = (self.layout.width, self.layout.height);
+        let view_layouts = tile(view_size, rows, columns);
+        // Activate the number of views needed.
+        self.set_active(&(0..view_layouts.len()).collect::<Vec<_>>());
+        for (idx, layout) in self.active.iter().zip(view_layouts.into_iter()) {
+            let view = self.views.get_mut(*idx).expect("Failed to get active view");
+            view.set_layout(layout);
+            view.partition(pane_rows, pane_columns);
         }
     }
 }

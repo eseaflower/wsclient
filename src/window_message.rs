@@ -1,4 +1,4 @@
-use crate::message::CaseMeta;
+use crate::message::{CaseMeta, Protocols};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -9,7 +9,7 @@ pub struct ViewSample {
 
 #[derive(Debug, Clone)]
 pub enum WindowMessage {
-    Cases(Vec<CaseMeta>),
+    Cases((Option<Protocols>, Vec<CaseMeta>)),
     PipelineError,
     Timer(Duration),
     Sample(usize),
