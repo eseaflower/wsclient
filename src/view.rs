@@ -27,6 +27,22 @@ pub struct Pane {
     case_key: Option<String>,
 }
 
+impl Default for Pane {
+    fn default() -> Self {
+        Pane {
+            layout: LayoutRect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            },
+            interaction: InteractionState::new(),
+            dirty: false,
+            case_key: None,
+        }
+    }
+}
+
 impl Pane {
     pub fn handle_window_event(&mut self, event: &WindowEvent) -> bool {
         let layout_position = PhysicalPosition::new(self.layout.x as f64, self.layout.y as f64);
@@ -69,26 +85,35 @@ impl Pane {
         self.dirty = self.interaction.update() || self.dirty;
     }
 
-    pub fn get_state(&mut self, force: bool) -> Option<PaneState> {
-        let view_state = {
-            if self.dirty || force {
-                if !self.dirty {
-                    println!("Forcing state update due to flag");
-                }
-                println!("Pane is clean");
-                self.dirty = false;
-                Some(self.interaction.get_render_state())
-            } else {
-                None
-            }
-        };
+    pub fn get_state(&mut self) -> PaneState {
+        self.dirty = false;
 
-        view_state.map(|v| PaneState {
-            view_state: v,
+        PaneState {
+            view_state: self.interaction.get_render_state(),
             layout: self.layout.clone(),
             key: self.case_key.clone(),
-        })
+        }
     }
+    // pub fn get_state(&mut self, force: bool) -> Option<PaneState> {
+    //     let view_state = {
+    //         if self.dirty || force {
+    //             if !self.dirty {
+    //                 println!("Forcing state update due to flag");
+    //             }
+    //             println!("Pane is clean");
+    //             self.dirty = false;
+    //             Some(self.interaction.get_render_state())
+    //         } else {
+    //             None
+    //         }
+    //     };
+
+    //     view_state.map(|v| PaneState {
+    //         view_state: v,
+    //         layout: self.layout.clone(),
+    //         key: self.case_key.clone(),
+    //     })
+    // }
 
     pub fn set_case(&mut self, case_key: String, number_of_images: usize) {
         self.case_key = Some(case_key);
@@ -170,12 +195,7 @@ impl View {
             datachannel: None,
             bitrate,
             dirty: false,
-            panes: vec![Pane {
-                layout: layout.clone(),
-                interaction: InteractionState::new(),
-                dirty: false,
-                case_key: None,
-            }],
+            panes: vec![Pane::default(), Pane::default()],
             focus: None,
             seq: 0,
         }
@@ -219,12 +239,12 @@ impl View {
                 .and_then(|caps| gst_video::VideoInfo::from_caps(caps).ok())
                 .unwrap();
             let area = info.width() * info.height();
-            let expected = self.layout.width * self.layout.height;
+            let expected = ((self.layout.width * self.layout.height) as f32
+                * (self.video_scaling * self.video_scaling)) as u32;
             let diff = (1.0_f32 - (area as f32 / expected as f32)).abs();
             println!("Diff is {}", diff);
             diff < 0.1
         } else {
-            println!("Not dirty");
             true
         }
     }
@@ -282,17 +302,34 @@ impl View {
         self.layout
     }
 
+    pub fn arrange_horizontal(&mut self) {
+        if self.panes.len() <= 0 {
+            log::warn!("No panes when trying to arrange");
+        }
+        println!("Got pane arrange!!!!!");
+        let pane_width = self.layout.width as f32 / self.panes.len() as f32;
+        // Align to 4 pixels.
+        let pane_width = ((pane_width / 4_f32).floor() * 4_f32) as u32;
+        let pane_height = self.layout.height;
+
+        let mut curr_x = 0;
+        for pane in self.panes.iter_mut() {
+            {
+                pane.set_layout(LayoutRect {
+                    x: curr_x,
+                    y: 0,
+                    width: pane_width,
+                    height: pane_height,
+                });
+
+                curr_x += pane_width;
+            }
+        }
+    }
+
     pub fn set_layout(&mut self, layout: LayoutRect) {
         self.layout = layout.clone();
-        // For now we have a single pane
-        assert!(self.panes.len() == 1);
-        // The panes are positioned relative to the view
-        self.panes[0].set_layout(LayoutRect {
-            x: 0,
-            y: 0,
-            width: layout.width,
-            height: layout.height,
-        });
+        self.arrange_horizontal();
         // Remove the stale sample
         self.current_sample.take();
         println!("Setting dirty on view");
@@ -305,9 +342,8 @@ impl View {
 
     fn handle_focus(&mut self, position: &PhysicalPosition<f64>) {
         self.focus = None;
-        for idx in 0..self.panes.len() {
+        for (idx, pane) in self.panes.iter().enumerate() {
             // Get the first view that contains the pointer position
-            let pane = self.panes.get(idx).expect("Focused pane index not found");
             if pane.contains(position) {
                 self.focus = Some(idx);
                 break;
@@ -368,34 +404,24 @@ impl View {
     }
 
     pub fn push_state(&mut self) {
-        assert!(self.panes.len() == 1);
-        let force = self.dirty;
-        let pane_state = self.panes[0].get_state(force);
-        if let Some(pane_state) = pane_state {
-            // Update sequence number for this view
-            let (seq, view_layout) = {
-                self.seq += 1;
-                (self.seq, self.layout.clone())
-            };
+        let dirty = self.panes.iter().any(|p| p.dirty) || self.dirty;
+        if dirty {
+            let pane_states: Vec<_> = self.panes.iter_mut().map(|p| p.get_state()).collect();
             self.push_render_state(RenderState {
-                layout: view_layout,
-                seq,
-                panes: vec![pane_state],
+                layout: self.layout.clone(),
+                seq: self.seq,
+                panes: pane_states,
                 snapshot: false,
                 timestamp: 0_f32,
             });
+            // Increase the sequence number
+            self.seq += 1;
         }
     }
 
     pub fn set_case(&mut self, case_key: String, number_of_images: usize) {
         for pane in &mut self.panes {
             pane.set_case(case_key.clone(), number_of_images);
-        }
-    }
-
-    pub fn invalidate(&mut self) {
-        for pane in self.panes.iter_mut() {
-            pane.invalidate();
         }
     }
 }
@@ -662,8 +688,5 @@ impl ViewControl {
         } else {
             log::error!("Failed to find view with index {}", sample.id);
         }
-    }
-    pub fn invalidate(&mut self) {
-        self.active_apply_mut(View::invalidate);
     }
 }
