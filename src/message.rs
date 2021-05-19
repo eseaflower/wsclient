@@ -50,17 +50,10 @@ pub struct Protocols {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PartitionCfg {
-    P1x1,
-    P2x2,
-    P3x3,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub struct LayoutCfg {
     pub name: String,
-    pub partition: PartitionCfg,
+    pub rows: usize,
+    pub columns: usize,
     pub panes: Vec<PaneCfg>,
 }
 

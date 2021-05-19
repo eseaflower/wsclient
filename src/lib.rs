@@ -29,6 +29,7 @@ mod window_message;
 pub struct AppConfig {
     viewport_size: (u32, u32),
     case_key: Option<String>,
+    protocol_key: Option<String>,
     ws_url: String,
     bitrate: f32,
     gpu: bool,
@@ -42,6 +43,7 @@ impl AppConfig {
         ws_url: String,
         viewport_size: (u32, u32),
         case_key: Option<String>,
+        protocol_key: Option<String>,
         bitrate: f32,
         gpu: bool,
         preset: String,
@@ -53,6 +55,7 @@ impl AppConfig {
             ws_url,
             viewport_size,
             case_key,
+            protocol_key,
             bitrate,
             gpu,
             preset,

@@ -15,8 +15,8 @@ use gstreamer_webrtc as gst_webrtc;
 use crate::{
     interaction::InteractionState,
     message::{
-        CaseMeta, ClientConfig, DataMessage, LayoutRect, PaneState, Protocols, RenderState,
-        ViewportSize,
+        CaseMeta, ClientConfig, DataMessage, LayoutCfg, LayoutRect, PaneState, Protocols,
+        RenderState, ViewportSize,
     },
     view,
     window_message::ViewSample,
@@ -140,9 +140,14 @@ impl Pane {
     //     })
     // }
 
-    pub fn set_case(&mut self, case: CaseMeta) {
-        self.case_key = Some(case.key);
-        self.interaction.set_image_count(case.number_of_images);
+    pub fn set_case(&mut self, case: Option<CaseMeta>) {
+        if let Some(case) = case {
+            self.case_key = Some(case.key);
+            self.interaction.set_image_count(case.number_of_images);
+        } else {
+            self.case_key = None;
+            self.interaction.set_image_count(0);
+        }
         self.dirty = true;
     }
 
@@ -431,7 +436,16 @@ impl View {
 
     pub fn set_case(&mut self, case: CaseMeta) {
         for pane in &mut self.panes {
-            pane.set_case(case.clone());
+            pane.set_case(Some(case.clone()));
+        }
+    }
+
+    pub fn set_cases<I: Iterator<Item = Option<CaseMeta>>>(&mut self, iter: &mut I) {
+        // Take a CaseMeta for each pane.
+        for pane in &mut self.panes {
+            // Get the next case (flatten to Option<Option<...>>)
+            let case = iter.next().and_then(|c| c);
+            pane.set_case(case);
         }
     }
 }
@@ -443,6 +457,7 @@ pub struct ViewControl {
     focus: Option<usize>,
     layout: LayoutRect,
     case_key: Option<String>,
+    protocol_key: Option<String>,
     protocols: Option<Protocols>,
     cases: Option<Vec<CaseMeta>>,
     partition: (usize, usize),
@@ -485,6 +500,7 @@ impl ViewControl {
                 height: 0,
             },
             case_key: config.case_key.clone(),
+            protocol_key: config.protocol_key.clone(),
             cases: None,
             protocols: None,
             partition: (1, 1),
@@ -615,6 +631,34 @@ impl ViewControl {
         self.active_apply_mut(|view| view.set_case(case.clone()));
     }
 
+    pub fn set_protocol(&mut self, protocol: LayoutCfg) {
+        log::info!(
+            "Setting protocol partition {}x{}",
+            protocol.rows,
+            protocol.columns
+        );
+        self.partition(protocol.rows, protocol.columns);
+
+        // Assign cases to panes. We need to collect into a vector so we can
+        // borrow self mutably later.
+        let cases: Vec<_> = protocol
+            .panes
+            .iter()
+            .map(|p| self.get_case_for_key(&p.case))
+            .collect();
+
+        // "Reuse" the iterator over all views
+        let mut cases = cases.into_iter();
+        for idx in &self.active {
+            let view = self
+                .views
+                .get_mut(*idx)
+                .expect("Failed to find active view");
+            // This will consume the next cases in the iterator.
+            view.set_cases(&mut cases);
+        }
+    }
+
     pub fn set_active(&mut self, idxs: &[usize]) {
         self.active = idxs
             .iter()
@@ -682,24 +726,77 @@ impl ViewControl {
         }
     }
 
+    fn get_case_for_key(&self, case_key: &str) -> Option<CaseMeta> {
+        self.cases.as_ref().and_then(|c| {
+            // Get the matching case or the first
+            c.iter()
+                .find(|case| *case.key == *case_key)
+                .map(|case| case.clone())
+        })
+    }
+
+    pub fn select_case_from_key(&mut self, case_key: &str) {
+        // Try to find the case based on key
+        if let Some(case) = self.get_case_for_key(case_key) {
+            println!("Selected case: {}", &case.key);
+            self.set_case(case);
+        } else {
+            log::warn!("Failed to find case with key {}", case_key);
+        }
+    }
+
+    pub fn select_preferred_case(&mut self) {
+        let case_key = self.case_key.as_ref().map(|c| c.clone());
+        match case_key {
+            Some(case_key) => {
+                self.select_case_from_key(&case_key);
+            }
+            None => {
+                log::info!("No default case set, using first case");
+                let selected = self
+                    .cases
+                    .as_ref()
+                    .and_then(|c| c.first().map(|case| case.clone()));
+                if let Some(selected) = selected {
+                    self.set_case(selected);
+                } else {
+                    log::warn!("No cases found!");
+                }
+            }
+        }
+    }
+
+    pub fn select_protocol_from_key(&mut self, protocol_key: &str) {
+        // Try to find the case based on key
+        let selected = self.protocols.as_ref().and_then(|p| {
+            // Get the matching case or the first
+            p.layout
+                .iter()
+                .find(|layout| *layout.name == *protocol_key)
+                .map(|layout| layout.clone())
+        });
+
+        if let Some(layout) = selected {
+            println!("Selected layout: {}", &layout.name);
+            self.set_protocol(layout);
+        } else {
+            log::warn!("Failed to find layout with key {}", protocol_key);
+        }
+    }
+
+    pub fn select_preferred_display(&mut self) {
+        if let Some(protocol_key) = self.protocol_key.as_ref().map(|p| p.clone()) {
+            log::info!("Using preferred protocol key {}", &protocol_key);
+            self.select_protocol_from_key(&protocol_key);
+        } else {
+            log::info!("No preferred protocol set, checking case key");
+            self.select_preferred_case();
+        }
+    }
+
     pub fn set_case_meta(&mut self, protocols: Option<Protocols>, cases: Vec<CaseMeta>) {
         self.cases = Some(cases);
         self.protocols = protocols;
-
-        let selected_case = if let Some(ref wanted) = self.case_key {
-            self.cases
-                .as_ref()
-                .unwrap()
-                .iter()
-                .find(|c| *c.key == *wanted)
-                .map(|c| c.clone())
-        } else {
-            self.cases.as_ref().unwrap().first().map(|c| c.clone())
-        };
-        if let Some(case) = selected_case {
-            println!("Selected case: {}", &case.key);
-            self.set_case(case);
-        }
     }
 
     pub fn partition(&mut self, rows: usize, columns: usize) {

@@ -678,6 +678,8 @@ impl App {
 
                         println!("Known cases:\n{}", view_control.get_case_string());
                         println!("Known protocols:\n{}", view_control.get_protocol_string());
+
+                        view_control.select_preferred_display();
                     }
                     WindowMessage::Datachannel(datachannel) => {
                         view_control.set_datachannel(datachannel);

@@ -7,6 +7,8 @@ struct Opt {
     ws_url: String,
     #[structopt(long, short)]
     case: Option<String>,
+    #[structopt(long, short)]
+    protocol: Option<String>,
     #[structopt(long, default_value = "640")]
     width: u32,
     #[structopt(long, default_value = "480")]
@@ -33,6 +35,7 @@ fn main() -> Result<()> {
         opt.ws_url,
         (opt.width, opt.height),
         opt.case,
+        opt.protocol,
         opt.bitrate,
         !opt.cpu,
         opt.preset,
