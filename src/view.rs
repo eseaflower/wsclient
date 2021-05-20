@@ -119,26 +119,6 @@ impl Pane {
             key: self.case_key.clone(),
         }
     }
-    // pub fn get_state(&mut self, force: bool) -> Option<PaneState> {
-    //     let view_state = {
-    //         if self.dirty || force {
-    //             if !self.dirty {
-    //                 println!("Forcing state update due to flag");
-    //             }
-    //             println!("Pane is clean");
-    //             self.dirty = false;
-    //             Some(self.interaction.get_render_state())
-    //         } else {
-    //             None
-    //         }
-    //     };
-
-    //     view_state.map(|v| PaneState {
-    //         view_state: v,
-    //         layout: self.layout.clone(),
-    //         key: self.case_key.clone(),
-    //     })
-    // }
 
     pub fn set_case(&mut self, case: Option<CaseMeta>) {
         if let Some(case) = case {
@@ -149,6 +129,10 @@ impl Pane {
             self.interaction.set_image_count(0);
         }
         self.dirty = true;
+    }
+
+    pub fn get_case_key(&self) -> Option<&String> {
+        self.case_key.as_ref()
     }
 
     pub fn contains(&self, position: &PhysicalPosition<f64>) -> bool {
@@ -366,6 +350,22 @@ impl View {
         }
     }
 
+    fn clear_focus(&mut self) {
+        self.focus = None;
+    }
+
+    pub fn get_focused_pane(&mut self) -> Option<&mut Pane> {
+        if let Some(idx) = self.focus {
+            Some(
+                self.panes
+                    .get_mut(idx)
+                    .expect("Failed to find focused pane"),
+            )
+        } else {
+            None
+        }
+    }
+
     pub fn handle_window_event(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CursorMoved {
@@ -395,12 +395,8 @@ impl View {
 
     fn handle_translated_event(&mut self, event: &WindowEvent) -> bool {
         // The event has been translated and the focused pane has been updated.
-        self.focus.map_or(false, |idx| {
-            self.panes
-                .get_mut(idx)
-                .expect("Failed to find focused pane")
-                .handle_window_event(event)
-        })
+        self.get_focused_pane()
+            .map_or(false, |pane| pane.handle_window_event(event))
     }
 
     pub fn hide_cursor(&self) -> bool {
@@ -456,8 +452,9 @@ pub struct ViewControl {
     active: Vec<usize>,
     focus: Option<usize>,
     layout: LayoutRect,
-    case_key: Option<String>,
-    protocol_key: Option<String>,
+    default_case_key: Option<String>,
+    default_protocol_key: Option<String>,
+    current_protocol_key: Option<String>,
     protocols: Option<Protocols>,
     cases: Option<Vec<CaseMeta>>,
     partition: (usize, usize),
@@ -499,8 +496,9 @@ impl ViewControl {
                 width: 0,
                 height: 0,
             },
-            case_key: config.case_key.clone(),
-            protocol_key: config.protocol_key.clone(),
+            default_case_key: config.case_key.clone(),
+            default_protocol_key: config.protocol_key.clone(),
+            current_protocol_key: None,
             cases: None,
             protocols: None,
             partition: (1, 1),
@@ -561,6 +559,11 @@ impl ViewControl {
         }
     }
 
+    fn clear_focus(&mut self) {
+        self.focus = None;
+        self.views.iter_mut().for_each(|v| v.clear_focus());
+    }
+
     pub fn handle_window_event(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CursorMoved {
@@ -596,11 +599,97 @@ impl ViewControl {
                         self.set_active(&[0, 1]);
                         true
                     }
+                    Some(VirtualKeyCode::Down) => {
+                        println!("Down pressed");
+                        self.select_next_case();
+                        true
+                    }
+                    Some(VirtualKeyCode::Up) => {
+                        println!("Up pressed");
+                        self.select_previous_case();
+                        true
+                    }
+                    Some(VirtualKeyCode::Right) => {
+                        println!("Up pressed");
+                        self.select_next_protocol();
+                        true
+                    }
+                    Some(VirtualKeyCode::Left) => {
+                        println!("Down pressed");
+                        self.select_previous_protocol();
+                        true
+                    }
                     _ => false,
                 }
             }
             _ => self.handle_translated_event(event),
         }
+    }
+
+    fn change_case(&mut self, direction: i32) {
+        // Get the case currently selected in the focused pane
+        let current_case = self
+            .get_focused_view()
+            .and_then(|v| v.get_focused_pane())
+            .and_then(|pane| pane.get_case_key().map(Clone::clone));
+        let new_index = current_case.map_or(Some(0), |current_case| {
+            self.cases.as_ref().map(|cases| {
+                let current_index = cases.iter().position(|case| *case.key == current_case);
+                let reminder =
+                    current_index.map_or(0, |idx| idx as i32 + direction) % cases.len() as i32;
+                if reminder < 0 {
+                    (reminder + cases.len() as i32) as usize
+                } else {
+                    reminder as usize
+                }
+            })
+        });
+
+        if let Some(case_index) = new_index {
+            let case = self
+                .cases
+                .as_ref()
+                .and_then(|cases| cases.get(case_index).map(Clone::clone));
+            self.get_focused_view()
+                .map(|view| view.get_focused_pane().map(|pane| pane.set_case(case)));
+        } else {
+            println!("No next case found");
+        }
+    }
+
+    fn change_protocol(&mut self, direction: i32) {
+        let layout = self.current_protocol_key.as_ref().and_then(|protocol_key| {
+            self.protocols.as_ref().and_then(|p| {
+                let current_index = p.layout.iter().position(|l| &l.name == protocol_key);
+                let next_index =
+                    current_index.map_or(0, |idx| idx as i32 + direction) % p.layout.len() as i32;
+                let next_index = if next_index < 0 {
+                    (next_index + p.layout.len() as i32) as usize
+                } else {
+                    next_index as usize
+                };
+                p.layout.get(next_index).map(Clone::clone)
+            })
+        });
+
+        if let Some(layout) = layout {
+            self.set_protocol(layout);
+        } else {
+            println!("No protocol found");
+        }
+    }
+
+    fn select_next_case(&mut self) {
+        self.change_case(1);
+    }
+    fn select_previous_case(&mut self) {
+        self.change_case(-1);
+    }
+    fn select_next_protocol(&mut self) {
+        self.change_protocol(1);
+    }
+    fn select_previous_protocol(&mut self) {
+        self.change_protocol(-1);
     }
 
     fn handle_translated_event(&mut self, event: &WindowEvent) -> bool {
@@ -637,6 +726,8 @@ impl ViewControl {
             protocol.rows,
             protocol.columns
         );
+        self.current_protocol_key = Some(protocol.name);
+
         self.partition(protocol.rows, protocol.columns);
 
         // Assign cases to panes. We need to collect into a vector so we can
@@ -731,7 +822,7 @@ impl ViewControl {
             // Get the matching case or the first
             c.iter()
                 .find(|case| *case.key == *case_key)
-                .map(|case| case.clone())
+                .map(Clone::clone)
         })
     }
 
@@ -745,8 +836,8 @@ impl ViewControl {
         }
     }
 
-    pub fn select_preferred_case(&mut self) {
-        let case_key = self.case_key.as_ref().map(|c| c.clone());
+    pub fn select_default_case(&mut self) {
+        let case_key = self.default_case_key.as_ref().map(Clone::clone);
         match case_key {
             Some(case_key) => {
                 self.select_case_from_key(&case_key);
@@ -756,7 +847,7 @@ impl ViewControl {
                 let selected = self
                     .cases
                     .as_ref()
-                    .and_then(|c| c.first().map(|case| case.clone()));
+                    .and_then(|c| c.first().map(Clone::clone));
                 if let Some(selected) = selected {
                     self.set_case(selected);
                 } else {
@@ -784,13 +875,13 @@ impl ViewControl {
         }
     }
 
-    pub fn select_preferred_display(&mut self) {
-        if let Some(protocol_key) = self.protocol_key.as_ref().map(|p| p.clone()) {
+    pub fn select_default_display(&mut self) {
+        if let Some(protocol_key) = self.default_protocol_key.as_ref().map(|p| p.clone()) {
             log::info!("Using preferred protocol key {}", &protocol_key);
             self.select_protocol_from_key(&protocol_key);
         } else {
             log::info!("No preferred protocol set, checking case key");
-            self.select_preferred_case();
+            self.select_default_case();
         }
     }
 
@@ -805,6 +896,11 @@ impl ViewControl {
     }
 
     pub fn update_partitions(&mut self) {
+
+        // Make sure to clear the focus since we might change the
+        // set of views/panes.
+        self.clear_focus();
+
         let (rows, columns) = self.partition;
         // Check if we can split each partition to its own view.
         // Otherwise check if each row can use a separate view
