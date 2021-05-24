@@ -142,7 +142,6 @@ impl Pane {
     pub fn set_layout(&mut self, layout: LayoutRect) {
         self.layout = layout;
         // Assume the layout changes us so we are dirty
-        println!("Pane is dirty");
         self.dirty = true;
     }
 
@@ -256,7 +255,6 @@ impl View {
             let expected = ((self.layout.width * self.layout.height) as f32
                 * (self.video_scaling * self.video_scaling)) as u32;
             let diff = (1.0_f32 - (area as f32 / expected as f32)).abs();
-            println!("Diff is {}", diff);
             diff < 0.1
         } else {
             true
@@ -267,8 +265,6 @@ impl View {
         if self.accept_sample(&sample) {
             self.current_sample = Some(sample);
             self.dirty = false;
-        } else {
-            println!("Not accepting sample");
         }
     }
 
@@ -320,7 +316,6 @@ impl View {
         self.layout = layout.clone();
         // Remove the stale sample
         self.current_sample.take();
-        println!("Setting dirty on view");
         self.dirty = true;
     }
 
@@ -589,33 +584,19 @@ impl ViewControl {
             }
             WindowEvent::KeyboardInput { input, .. } if input.state == ElementState::Pressed => {
                 match input.virtual_keycode {
-                    Some(VirtualKeyCode::S) => {
-                        println!("S is pressed, setting single view");
-                        self.set_active(&[0]);
-                        true
-                    }
-                    Some(VirtualKeyCode::P) => {
-                        println!("P is pressed, setting two views.");
-                        self.set_active(&[0, 1]);
-                        true
-                    }
                     Some(VirtualKeyCode::Down) => {
-                        println!("Down pressed");
                         self.select_next_case();
                         true
                     }
                     Some(VirtualKeyCode::Up) => {
-                        println!("Up pressed");
                         self.select_previous_case();
                         true
                     }
                     Some(VirtualKeyCode::Right) => {
-                        println!("Up pressed");
                         self.select_next_protocol();
                         true
                     }
                     Some(VirtualKeyCode::Left) => {
-                        println!("Down pressed");
                         self.select_previous_protocol();
                         true
                     }
@@ -653,7 +634,7 @@ impl ViewControl {
             self.get_focused_view()
                 .map(|view| view.get_focused_pane().map(|pane| pane.set_case(case)));
         } else {
-            println!("No next case found");
+            log::info!("No next case found");
         }
     }
 
@@ -675,7 +656,7 @@ impl ViewControl {
         if let Some(layout) = layout {
             self.set_protocol(layout);
         } else {
-            println!("No protocol found");
+            log::info!("No protocol found");
         }
     }
 
@@ -896,7 +877,6 @@ impl ViewControl {
     }
 
     pub fn update_partitions(&mut self) {
-
         // Make sure to clear the focus since we might change the
         // set of views/panes.
         self.clear_focus();
@@ -906,15 +886,15 @@ impl ViewControl {
         // Otherwise check if each row can use a separate view
         // In the last case we use a single view with all partitions.
         let (rows, columns, (pane_rows, pane_columns)) = if rows * columns <= self.views.len() {
-            println!("Each partition gets its own view");
+            log::info!("Each partition gets its own view");
             // Each view is partitioned 1x1
             (rows, columns, (1, 1))
         } else if rows <= self.views.len() {
-            println!("Each row gets its own view");
+            log::info!("Each row gets its own view");
             // Use row views, each partitioned into 1xcolumns
             (rows, 1, (1, columns))
         } else {
-            println!("All partitions in a single view");
+            log::info!("All partitions in a single view");
             // The view is partitioned rows x columns
             (1, 1, (rows, columns))
         };

@@ -103,6 +103,7 @@ impl App {
         // rtpbin
         //     .set_property("latency", &0_u32)
         //     .expect("Failed to set latency");
+
         println!("Setting 'synced' rtpjitterbuffer mode");
         rtpbin.set_property_from_str("buffer-mode", "synced");
 

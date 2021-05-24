@@ -10,5 +10,6 @@ out vec4 f_color;
 layout(binding=0) uniform sampler2D image_texture;
 
 void main() {
-    f_color = texture(image_texture, image_coord);
+    float val = texture(image_texture, image_coord).g;
+    f_color= vec4(val, val, val, 1.0);
 }

@@ -24,6 +24,7 @@ pub struct GlRenderer {
     image_vertex_buffer: u32,
     _image_index_buffer: u32,
     program_argb: u32,
+    program_grey: u32,
     quad: Quad,
     state: ViewState,
     own_ctx: gst_gl::GLContext,
@@ -58,6 +59,17 @@ impl GlRenderer {
             include_str!("shaders/glvert.glsl"),
             include_str!("shaders/glfrag_argb.glsl"),
         );
+
+
+        // TODO: Handle switching between color and greys
+        log::warn!("Will only use the force greyscale shader!");
+
+        let program_grey = Self::compile_program(
+            &bindings,
+            include_str!("shaders/glvert.glsl"),
+            include_str!("shaders/glfrag_argb_grey.glsl"),
+        );
+
         let (image_vao, image_vertex_buffer, image_index_buffer) = Self::create_vao(&bindings);
 
         let mut state = ViewState::new();
@@ -69,6 +81,7 @@ impl GlRenderer {
             image_vertex_buffer,
             _image_index_buffer: image_index_buffer,
             program_argb,
+            program_grey,
             quad: Quad::default(),
             state,
             own_ctx,
@@ -193,11 +206,16 @@ impl GlRenderer {
         self.update_vertex_buffer(self.image_vertex_buffer, vertices);
     }
 
-    unsafe fn draw_image(&self, vertices: &[vertex::Vertex], image_texture: u32) {
+    unsafe fn draw_image(&self, vertices: &[vertex::Vertex], image_texture: u32, use_grey: bool) {
         // Update the vertex buffer
         self.update_image_vertex_buffer(vertices);
 
-        self.bindings.UseProgram(self.program_argb);
+        if use_grey {
+            // Use a shader that ensures real greys!
+            self.bindings.UseProgram(self.program_grey);
+        } else {
+            self.bindings.UseProgram(self.program_argb);
+        }
         self.bindings.BindVertexArray(self.image_vao);
 
         // Activate and bind the textures
@@ -246,10 +264,10 @@ impl GlRenderer {
     //     self.bindings.Disable(gl::BLEND);
     // }
 
-    pub fn draw(&self, image_vertices: Vec<vertex::Vertex>, image_texture: u32) {
+    pub fn draw(&self, image_vertices: Vec<vertex::Vertex>, image_texture: u32, use_grey: bool) {
         unsafe {
             // Draw the image
-            self.draw_image(&image_vertices, image_texture);
+            self.draw_image(&image_vertices, image_texture, use_grey);
             // Place to draw the cursor (remember alpha blend)?
             // if let Some(pointer_vertices) = pointer_vertices {
             //     self.draw_pointer(&pointer_vertices);
@@ -272,7 +290,7 @@ impl GlRenderer {
         self.quad.map_texture_coords(size, size);
     }
 
-    pub fn render(&self, sample: gst::Sample) {
+    pub fn render(&self, sample: gst::Sample, use_grey: bool) {
         // Get the texture id from the sample.
 
         let buffer = sample.get_buffer_owned().unwrap();
@@ -300,11 +318,10 @@ impl GlRenderer {
             sync_meta.wait(&self.own_ctx);
             if let Some(image_texture) = frame.get_texture_id(0) {
                 log::trace!("Got frame texture with id {}", image_texture);
-                println!("Got frame texture with id {}", image_texture);
 
                 // Compute the vertices to use
                 let image_vertices = self.quad.get_vertex(&self.state);
-                self.draw(image_vertices, image_texture);
+                self.draw(image_vertices, image_texture, use_grey);
             }
         }
     }
@@ -352,8 +369,12 @@ impl GlRenderer {
 
             // Always clear the viewport.
             self.clear();
+
+            // For now always use grey
+            let use_grey = true;
+
             // Do the render, if there is a sample
-            sample.map(|sample| self.render(sample));
+            sample.map(|sample| self.render(sample, use_grey));
         }
         unsafe {
             self.bindings.Disable(gl::SCISSOR_TEST);
