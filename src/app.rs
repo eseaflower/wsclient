@@ -53,6 +53,8 @@ pub struct AppInner {
     webrtcbin: gst::Element,
     pipeline: gst::Pipeline,
     shared: Mutex<SharedState>,
+    tcp: bool,
+    hw: bool,
 }
 
 impl Deref for App {
@@ -67,7 +69,7 @@ impl Drop for AppInner {
     }
 }
 impl App {
-    pub fn new(signaller: UnboundedSender<AppMessage>) -> Self {
+    pub fn new(signaller: UnboundedSender<AppMessage>, tcp: bool, hw: bool) -> Self {
         let pipeline = gst::Pipeline::new(None);
         let webrtcbin = gst::ElementFactory::make("webrtcbin", Some("webrtcbin"))
             .expect("Failed to create webrtcbin");
@@ -77,46 +79,65 @@ impl App {
         webrtcbin.set_property_from_str("stun-server", "stun://stun.l.google.com:19302");
         webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
 
-        // TODO: Remove
+        if tcp {
+            println!("Disabling UDP, using TCP");
 
-        // webrtcbin
-        //     .set_property("latency", &50_u32)
-        //     .expect("Failed to setr latency");
+            let agent = webrtcbin
+                .get_property("ice-agent")
+                .expect("Failed to get ice agent")
+                .get::<gst::Object>()
+                .expect("Failed to get object")
+                .expect("Object is empty");
+            agent
+                .set_property("ice-udp", &false)
+                .expect("Failed to disable UDP");
 
-        webrtcbin
-            .connect("on-new-transceiver", false, move |vals| {
-                println!("Got transceiver callback");
+        // let rtpbin = pipeline
+        //     .get_by_name("rtpbin")
+        //     .expect("Failed to get rtpbin");
 
-                let t = vals[1]
-                    .get::<gst_webrtc::WebRTCRTPTransceiver>()
-                    .expect("Not the type")
-                    .expect("Trans is None");
-                t.set_property("do-nack", &true)
-                    .expect("Failed to set nack");
-                None
-            })
-            .expect("Failed to attach handler");
+        // // rtpbin
+        // //     .set_property("latency", &500_u32)
+        // //     .expect("Failed to set latency");
+
+        // println!("Setting 'synced' rtpjitterbuffer mode");
+        // rtpbin.set_property_from_str("buffer-mode", "synced");
+        } else {
+            // For UDP transfer we need some mechanisms to handle missing packets
+            println!("Allowing UDP, adding NACKs");
+            webrtcbin
+                .connect("on-new-transceiver", false, move |vals| {
+                    log::debug!("Got transceiver callback, setting nack");
+                    let t = vals[1]
+                        .get::<gst_webrtc::WebRTCRTPTransceiver>()
+                        .expect("Not the type")
+                        .expect("Trans is None");
+                    t.set_property("do-nack", &true)
+                        .expect("Failed to set nack");
+                    None
+                })
+                .expect("Failed to attach handler");
+
+            // let rtpbin = pipeline
+            //     .get_by_name("rtpbin")
+            //     .expect("Failed to get rtpbin");
+            // rtpbin
+            //     .set_property("do-retransmission", &true)
+            //     .expect("Failed to set retransmission");
+            // rtpbin
+            //     .set_property("drop-on-latency", &true)
+            //     .expect("Failed to set drop on latency");
+            // rtpbin
+            //     .set_property("do-lost", &true)
+            //     .expect("Failed to set do-lost");
+        }
 
         let rtpbin = pipeline
             .get_by_name("rtpbin")
             .expect("Failed to get rtpbin");
-        // rtpbin
-        //     .set_property("latency", &0_u32)
-        //     .expect("Failed to set latency");
 
         println!("Setting 'synced' rtpjitterbuffer mode");
         rtpbin.set_property_from_str("buffer-mode", "synced");
-
-        // rtpbin
-        //     .set_property("do-retransmission", &true)
-        //     .expect("Failed to set retransmission");
-        // rtpbin
-        //     .set_property("drop-on-latency", &true)
-        //     .expect("Failed to set drop on latency");
-        // rtpbin
-        //     .set_property("do-lost", &true)
-        //     .expect("Failed to set do-lost");
-        // rtpbin.set_property_from_str("buffer-mode", "slave");
 
         // END TODO
 
@@ -129,6 +150,8 @@ impl App {
                 timers: Vec::default(),
                 samples: HashMap::default(),
             }),
+            tcp,
+            hw,
         };
         let app = App(Arc::new(inner));
 
@@ -223,11 +246,14 @@ impl App {
         //  ! rtph264depay name=depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! d3d11upload ! d3d11videosink";
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! d3d11upload ! d3d11convert ! d3d11videosink sync=false";
+        let decoder_template = if self.hw { "nvh264dec" } else { "openh264dec" };
         let pipeline_template =
-            "rtph264depay name=depay{idx} ! h264parse name=parse{idx} ! openh264dec name=decoder{idx} ! glupload name=upload{idx} ! glcolorconvert name=convert{idx} ! appsink name=appsink{idx}";
-        // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! glupload ! glcolorconvert ! glimagesinkelement sync=false max-lateness=1 processing-deadline=1 enable-last-sample=false";
+            "rtph264depay name=depay{idx} ! h264parse name=parse{idx} config-interval=-1 ! {decoder_tpl} name=decoder{idx} ! glupload name=upload{idx} ! glcolorconvert name=convert{idx} ! appsink name=appsink{idx}";
+        // Get the selected decoder
+        let pipeline_template = pipeline_template.replace("{decoder_tpl}", decoder_template);
         let pipeline_description = pipeline_template.replace("{idx}", &mlineidx.to_string());
-        // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! fakesink sync=false";
+        println!("Using decoder bin: {}", &pipeline_template);
+
         let decodebin = gst::parse_bin_from_description(&pipeline_description, true)
             .expect("Failed to parse decodebin");
 
@@ -302,13 +328,13 @@ impl App {
             .expect("Failed to sync decodebin with parent");
 
         let depay = decodebin
-            .get_by_name(&format!("parse{}", mlineidx))
-            .expect("Failed to get depay");
+            .get_by_name(&format!("decoder{}", mlineidx))
+            .expect("Failed to get decoder");
         let convert = decodebin
             .get_by_name(&format!("convert{}", mlineidx))
             .expect("Failed to get appsink");
 
-        let timer = ElementTimer::new(&format!("depay-convert{}", mlineidx), depay, convert);
+        let timer = ElementTimer::new(&format!("decoder-convert{}", mlineidx), depay, convert);
         {
             let mut shared = self.shared.lock().unwrap();
             shared.timers.push(timer);
@@ -344,6 +370,8 @@ impl App {
                     sdp_mline_index,
                     candidate,
                 };
+
+                dbg!(&msg);
 
                 app.send_app_message(msg)
                     .expect("Failed to send ice candidate");
@@ -664,6 +692,9 @@ impl App {
         // Start a repeat timer that fires with the request timeout
         let duration = Duration::from_millis(1);
         timer.repeat(WindowMessage::Timer(duration), duration);
+        // Start a timer that traces JitterBuffer statistics
+        timer.repeat(WindowMessage::JitterStats, Duration::from_millis(1000));
+
         let mut layout_pending = false;
 
         event_loop.run(move |event, _target, flow| {
@@ -702,6 +733,7 @@ impl App {
                         }
 
                         log::trace!("Main loop got a sample");
+
                         // Get the latest sample for view 'index'
                         self.get_sample(index)
                             .map(|sample| view_control.push_sample(sample));
@@ -730,6 +762,18 @@ impl App {
                     WindowMessage::PipelineError => {
                         log::error!("Got error from pipeline, exiting");
                         *flow = ControlFlow::Exit;
+                    }
+                    WindowMessage::JitterStats => {
+                        self.pipeline.get_by_name("rtpjitterbuffer0").map(|e| {
+                            let gst_stats = e.get_property("stats").expect("Failed to get stats");
+                            let stats = gst_stats
+                                .get::<&gst::StructureRef>()
+                                .expect("Failed to cast to StructureRef")
+                                .expect("StructureRef is empty");
+
+                            let jitter_stats = to_jitter_stats(stats);
+                            log::trace!("{:?}", jitter_stats);
+                        });
                     }
                 },
                 Event::WindowEvent { event, .. } => {
@@ -790,5 +834,31 @@ impl App {
                 _ => (),
             }
         });
+    }
+}
+#[derive(Debug)]
+struct JitterStats {
+    num_pushed: u64,
+    num_lost: u64,
+    num_late: u64,
+    num_duplicates: u64,
+    avg_jitter: u64,
+    rtx_count: u64,
+    rtx_success_count: u64,
+    rtx_per_packet: f64,
+    rtx_rtt: u64,
+}
+
+fn to_jitter_stats(stats: &gst::StructureRef) -> JitterStats {
+    JitterStats {
+        num_pushed: stats.get::<u64>("num-pushed").unwrap().unwrap(),
+        num_lost: stats.get::<u64>("num-lost").unwrap().unwrap(),
+        num_late: stats.get::<u64>("num-late").unwrap().unwrap(),
+        num_duplicates: stats.get::<u64>("num-duplicates").unwrap().unwrap(),
+        avg_jitter: stats.get::<u64>("avg-jitter").unwrap().unwrap(),
+        rtx_success_count: stats.get::<u64>("rtx-success-count").unwrap().unwrap(),
+        rtx_count: stats.get::<u64>("rtx-count").unwrap().unwrap(),
+        rtx_per_packet: stats.get::<f64>("rtx-per-packet").unwrap().unwrap(),
+        rtx_rtt: stats.get::<u64>("rtx-rtt").unwrap().unwrap(),
     }
 }

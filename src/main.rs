@@ -25,6 +25,10 @@ struct Opt {
     video_scaling: f32,
     #[structopt(long)]
     narrow: bool,
+    #[structopt(long)]
+    tcp: bool,
+    #[structopt(long)]
+    client_hw: bool,
 }
 
 fn main() -> Result<()> {
@@ -42,6 +46,8 @@ fn main() -> Result<()> {
         opt.lossless,
         opt.video_scaling,
         opt.narrow,
+        opt.tcp,
+        opt.client_hw,
     );
     log::info!("Running with config: {:?}", &config);
     wsclient::run(config)

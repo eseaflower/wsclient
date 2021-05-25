@@ -15,4 +15,5 @@ pub enum WindowMessage {
     Sample(usize),
     Datachannel(gstreamer_webrtc::WebRTCDataChannel),
     UpdateLayout,
+    JitterStats,
 }

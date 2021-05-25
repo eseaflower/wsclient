@@ -37,6 +37,8 @@ pub struct AppConfig {
     lossless: bool,
     video_scaling: f32,
     narrow: bool,
+    tcp: bool,
+    client_hw: bool,
 }
 impl AppConfig {
     pub fn new(
@@ -50,6 +52,8 @@ impl AppConfig {
         lossless: bool,
         video_scaling: f32,
         narrow: bool,
+        tcp: bool,
+        client_hw: bool,
     ) -> Self {
         Self {
             ws_url,
@@ -62,6 +66,8 @@ impl AppConfig {
             lossless,
             video_scaling,
             narrow,
+            tcp,
+            client_hw,
         }
     }
 }
@@ -139,7 +145,7 @@ pub fn run(config: AppConfig) -> Result<()> {
 
     // Create the views that we want connected.
     let (snd, rcv) = unbounded::<AppMessage>();
-    let app = App::new(snd);
+    let app = App::new(snd, config.tcp, config.client_hw);
 
     let signal_thread = run_signalling(config.ws_url.clone(), Arc::downgrade(&app.0), rcv);
 

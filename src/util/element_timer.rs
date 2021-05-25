@@ -55,6 +55,9 @@ impl ElementTimer {
             if let Ok(mut pending) = clone.lock() {
                 log::trace!("== Pending items: {}", pending.len());
 
+                // Remove entries that are too old.
+                pending.retain(|p| p.elapsed().as_secs_f32() < 1f32);
+
                 if let Some(start) = pending.pop() {
                     log::trace!("{} - {:#?}", prefix, start.elapsed());
                 }
