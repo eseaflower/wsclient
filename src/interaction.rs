@@ -231,8 +231,12 @@ impl InteractionState {
         (updated || mode_change, sync_op)
     }
 
-    pub fn get_render_state(&mut self) -> ViewState {
+    pub fn get_render_state(&self) -> ViewState {
         self.viewstate.clone()
+    }
+
+    pub fn set_render_state(&mut self, state: ViewState) {
+        self.viewstate = state;
     }
 
     pub fn toggle_sync(&mut self) {

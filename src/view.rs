@@ -6,7 +6,7 @@ use std::{
 
 use glutin::{
     dpi::PhysicalPosition,
-    event::{ElementState, MouseScrollDelta, VirtualKeyCode, WindowEvent},
+    event::{ElementState, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent},
 };
 use gstreamer as gst;
 use gstreamer_video as gst_video;
@@ -19,6 +19,7 @@ use crate::{
         RenderState, ViewportSize,
     },
     view,
+    view_state::ViewState,
     window_message::ViewSample,
     AppConfig,
 };
@@ -50,7 +51,7 @@ pub struct Pane {
     layout: LayoutRect,
     interaction: InteractionState,
     dirty: bool,
-    case_key: Option<String>,
+    case: Option<CaseMeta>,
 }
 
 impl Default for Pane {
@@ -65,7 +66,7 @@ impl Default for Pane {
             },
             interaction: InteractionState::new(),
             dirty: false,
-            case_key: None,
+            case: None,
         }
     }
 }
@@ -149,26 +150,25 @@ impl Pane {
         PaneState {
             view_state: self.interaction.get_render_state(),
             layout: self.layout.clone(),
-            key: self.case_key.clone(),
+            key: self.case.as_ref().map(|c| c.key.clone()),
         }
     }
 
     pub fn set_case(&mut self, case: Option<CaseMeta>) {
         // Reset the interaction state
         self.interaction = InteractionState::new();
+        self.case = case;
 
-        if let Some(case) = case {
-            self.case_key = Some(case.key);
+        if let Some(case) = &self.case {
             self.interaction.set_image_count(case.number_of_images);
         } else {
-            self.case_key = None;
             self.interaction.set_image_count(0);
         }
         self.dirty = true;
     }
 
     pub fn get_case_key(&self) -> Option<&String> {
-        self.case_key.as_ref()
+        self.case.as_ref().map(|c| &c.key)
     }
 
     pub fn contains(&self, position: &PhysicalPosition<f64>) -> bool {
@@ -191,6 +191,15 @@ impl Pane {
 
     pub fn set_id(&mut self, id: String) {
         self.id = id;
+    }
+
+    pub fn park_state(&self) -> (Option<CaseMeta>, ViewState) {
+        (self.case.clone(), self.interaction.get_render_state())
+    }
+
+    pub fn set_viewstate(&mut self, state: ViewState) {
+        self.interaction.set_render_state(state);
+        self.dirty = true;
     }
 }
 
@@ -479,9 +488,15 @@ impl View {
         }
     }
 
-    pub fn set_case(&mut self, case: CaseMeta) {
+    pub fn set_case(&mut self, case: Option<CaseMeta>) {
         for pane in &mut self.panes {
-            pane.set_case(Some(case.clone()));
+            pane.set_case(case.clone());
+        }
+    }
+
+    pub fn set_viewstate(&mut self, state: ViewState) {
+        for pane in &mut self.panes {
+            pane.set_viewstate(state.clone());
         }
     }
 
@@ -491,6 +506,17 @@ impl View {
             // Get the next case (flatten to Option<Option<...>>)
             let case = iter.next().and_then(|c| c);
             pane.set_case(case);
+        }
+    }
+
+    pub fn park_state(&self) -> Vec<(Option<CaseMeta>, ViewState)> {
+        self.panes.iter().map(|p| p.park_state()).collect()
+    }
+
+    pub fn restore_parked(&mut self, parked: Vec<(Option<CaseMeta>, ViewState)>) {
+        for (pane, state) in self.panes.iter_mut().zip(parked.into_iter()) {
+            pane.set_case(state.0);
+            pane.set_viewstate(state.1);
         }
     }
 }
@@ -507,6 +533,8 @@ pub struct ViewControl {
     protocols: Option<Protocols>,
     cases: Option<Vec<CaseMeta>>,
     partition: (usize, usize),
+    last_click: std::time::Instant,
+    parked: Option<ParkedState>,
 }
 
 impl ViewControl {
@@ -551,6 +579,8 @@ impl ViewControl {
             cases: None,
             protocols: None,
             partition: (1, 1),
+            last_click: std::time::Instant::now(),
+            parked: None,
         }
     }
 
@@ -657,6 +687,19 @@ impl ViewControl {
                     _ => self.handle_translated_event(event),
                 }
             }
+            WindowEvent::MouseInput { state, button, .. }
+                if *state == ElementState::Pressed && *button == MouseButton::Left =>
+            {
+                let time_since_last_click = self.last_click.elapsed().as_millis();
+                self.last_click = std::time::Instant::now();
+                if time_since_last_click < 200 {
+                    println!("Double-click detected");
+                    self.toggle_1x1();
+                    true
+                } else {
+                    self.handle_translated_event(event)
+                }
+            }
             _ => self.handle_translated_event(event),
         }
     }
@@ -761,7 +804,7 @@ impl ViewControl {
         self.active_apply_mut(View::push_state);
     }
 
-    pub fn set_case(&mut self, case: CaseMeta) {
+    pub fn set_case(&mut self, case: Option<CaseMeta>) {
         // For now set on all active views
         self.active_apply_mut(|view| view.set_case(case.clone()));
     }
@@ -876,7 +919,7 @@ impl ViewControl {
         // Try to find the case based on key
         if let Some(case) = self.get_case_for_key(case_key) {
             println!("Selected case: {}", &case.key);
-            self.set_case(case);
+            self.set_case(Some(case));
         } else {
             log::warn!("Failed to find case with key {}", case_key);
         }
@@ -895,7 +938,7 @@ impl ViewControl {
                     .as_ref()
                     .and_then(|c| c.first().map(Clone::clone));
                 if let Some(selected) = selected {
-                    self.set_case(selected);
+                    self.set_case(Some(selected));
                 } else {
                     log::warn!("No cases found!");
                 }
@@ -974,4 +1017,56 @@ impl ViewControl {
             view.partition(pane_rows, pane_columns);
         }
     }
+
+    fn toggle_1x1(&mut self) {
+        if self.parked.is_some() {
+            // Restore previous parked state
+            println!("Restoring parked views");
+            self.restore_parked();
+        } else {
+            let focused_settings = self.get_focused_view().and_then(|v| {
+                v.get_focused_pane()
+                    .and_then(|pane| Some((pane.case.clone(), pane.interaction.get_render_state())))
+            });
+
+            if let Some(settings) = focused_settings {
+                // We have a focused pane.
+
+                // Save state to restore.
+                self.park_state();
+                println!("Parking views");
+
+                self.partition(1, 1);
+                self.active_apply_mut(|v| {
+                    v.set_case(settings.0.clone());
+                    v.set_viewstate(settings.1)
+                })
+            }
+        }
+    }
+
+    fn park_state(&mut self) {
+        let states = self.active_map(|v| v.park_state());
+        self.parked = Some(ParkedState {
+            partition: self.partition,
+            states,
+        });
+    }
+
+    fn restore_parked(&mut self) {
+        if let Some(parked) = self.parked.take() {
+            self.partition(parked.partition.0, parked.partition.1);
+
+            for (idx, parked_view) in self.active.iter().zip(parked.states.into_iter()) {
+                let view = self.views.get_mut(*idx).expect("Failed to get view");
+                view.restore_parked(parked_view);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ParkedState {
+    partition: (usize, usize),
+    states: Vec<Vec<(Option<CaseMeta>, ViewState)>>,
 }
