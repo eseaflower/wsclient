@@ -12,6 +12,10 @@ pub enum InteractionMode {
     FastScroll,
     Wl,
 }
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum SyncOperation {
+    Scroll(i32),
+}
 
 #[derive(Debug)]
 pub struct InteractionState {
@@ -29,6 +33,8 @@ pub struct InteractionState {
 
     image_count: Option<usize>,
     viewstate: ViewState,
+
+    synchronized: bool,
 }
 
 impl InteractionState {
@@ -45,6 +51,7 @@ impl InteractionState {
             mode: None,
             image_count: None,
             viewstate: ViewState::new(),
+            synchronized: false,
         }
     }
 
@@ -106,7 +113,7 @@ impl InteractionState {
         })
     }
 
-    fn update_frame(&mut self, delta: f32) -> bool {
+    fn update_frame(&mut self, delta: f32) -> i32 {
         self.frame_acc += delta;
 
         let abs_delta = self.frame_acc.abs().round() as i32;
@@ -125,10 +132,8 @@ impl InteractionState {
         // Return true if the frame has changed.
         if next_frame != current_frame {
             self.viewstate.set_frame(Some(next_frame as u32));
-            true
-        } else {
-            false
         }
+        next_frame - current_frame
     }
 
     pub fn hide_cursor(&self) -> bool {
@@ -139,7 +144,7 @@ impl InteractionState {
         }
     }
 
-    pub fn update(&mut self) -> bool {
+    pub fn update(&mut self) -> (bool, Option<SyncOperation>) {
         // Check which interaction mode we should be in. If it differs from what is set,
         // we need to "exit old"/"enter new".
         let mode = self.mode_from_state();
@@ -160,6 +165,7 @@ impl InteractionState {
 
         let mut updated = false;
         self.viewstate.cursor = None;
+        let mut sync_op = None;
         if let Some(mode) = self.mode {
             match mode {
                 InteractionMode::Zoom => {
@@ -182,15 +188,28 @@ impl InteractionState {
                 InteractionMode::Scroll => {
                     if let Some(delta) = self.scroll_delta {
                         // Move frames forward
-                        self.update_frame(-delta);
-                        updated = true;
+                        let frame_diff = self.update_frame(-delta);
+                        if frame_diff != 0 {
+                            updated = true;
+                            // Check sync?
+                            if self.synchronized {
+                                sync_op = Some(SyncOperation::Scroll(frame_diff));
+                            }
+                        }
                     }
                 }
                 InteractionMode::FastScroll => {
                     if let Some(movement) = movement {
                         let delta = movement.1 as f32 / 10.0_f32;
                         // Use delta to move the frames forward.
-                        updated = self.update_frame(delta);
+                        let frame_diff = self.update_frame(delta);
+                        if frame_diff != 0 {
+                            updated = true;
+                            // Check sync?
+                            if self.synchronized {
+                                sync_op = Some(SyncOperation::Scroll(frame_diff));
+                            }
+                        }
                     }
                 }
                 InteractionMode::Wl => {
@@ -209,11 +228,19 @@ impl InteractionState {
         self.scroll_delta = None;
         // The state has been updated given the current mouse position
         self.anchor = self.mouse_position;
-        updated || mode_change
+        (updated || mode_change, sync_op)
     }
 
     pub fn get_render_state(&mut self) -> ViewState {
         self.viewstate.clone()
+    }
+
+    pub fn toggle_sync(&mut self) {
+        self.synchronized = !self.synchronized;
+    }
+
+    pub fn is_synchronized(&self) -> bool {
+        self.synchronized
     }
 }
 

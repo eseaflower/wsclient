@@ -13,7 +13,7 @@ use gstreamer_video as gst_video;
 use gstreamer_webrtc as gst_webrtc;
 
 use crate::{
-    interaction::InteractionState,
+    interaction::{InteractionState, SyncOperation},
     message::{
         CaseMeta, ClientConfig, DataMessage, LayoutCfg, LayoutRect, PaneState, Protocols,
         RenderState, ViewportSize,
@@ -46,6 +46,7 @@ fn tile(view_size: (u32, u32), rows: usize, columns: usize) -> Vec<LayoutRect> {
 
 #[derive(Debug)]
 pub struct Pane {
+    id: String,
     layout: LayoutRect,
     interaction: InteractionState,
     dirty: bool,
@@ -55,6 +56,7 @@ pub struct Pane {
 impl Default for Pane {
     fn default() -> Self {
         Pane {
+            id: String::from("default"),
             layout: LayoutRect {
                 x: 0,
                 y: 0,
@@ -98,6 +100,20 @@ impl Pane {
                 self.interaction.handle_mouse_wheel(delta);
                 true
             }
+            WindowEvent::KeyboardInput { input, .. } if input.state == ElementState::Pressed => {
+                match input.virtual_keycode {
+                    Some(VirtualKeyCode::S) => {
+                        self.interaction.toggle_sync();
+                        log::debug!(
+                            "Sync on pane {} is {}",
+                            &self.id,
+                            self.interaction.is_synchronized()
+                        );
+                        true
+                    }
+                    _ => false,
+                }
+            }
             _ => false,
         }
     }
@@ -106,8 +122,25 @@ impl Pane {
         self.interaction.hide_cursor()
     }
 
-    pub fn update(&mut self) {
-        self.dirty = self.interaction.update() || self.dirty;
+    pub fn update(&mut self) -> Option<SyncOperation> {
+        let (updated, sync) = self.interaction.update();
+        self.dirty = updated || self.dirty;
+        sync
+    }
+
+    pub fn update_sync(&mut self, sync: &(String, SyncOperation)) {
+        if self.interaction.is_synchronized() && self.id != sync.0 {
+            // We did not issue the sync-op, apply
+            match sync.1 {
+                SyncOperation::Scroll(delta) => {
+                    // "Hack" the frame move by issuing a mouse wheel event.
+                    // Invert the delta.
+                    self.interaction.handle_mouse_wheel(-delta as f32);
+                }
+            }
+        }
+        // Run normal update.
+        self.update();
     }
 
     pub fn get_state(&mut self) -> PaneState {
@@ -121,6 +154,9 @@ impl Pane {
     }
 
     pub fn set_case(&mut self, case: Option<CaseMeta>) {
+        // Reset the interaction state
+        self.interaction = InteractionState::new();
+
         if let Some(case) = case {
             self.case_key = Some(case.key);
             self.interaction.set_image_count(case.number_of_images);
@@ -147,6 +183,14 @@ impl Pane {
 
     pub fn invalidate(&mut self) {
         self.dirty = true;
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn set_id(&mut self, id: String) {
+        self.id = id;
     }
 }
 
@@ -324,9 +368,13 @@ impl View {
         self.panes.resize_with(rows * columns, || Pane::default());
         let view_size = (self.layout.width, self.layout.height);
         let layouts = tile(view_size, rows, columns);
-        for (pane, layout) in self.panes.iter_mut().zip(layouts.into_iter()) {
+        for (id_suffix, (pane, layout)) in
+            self.panes.iter_mut().zip(layouts.into_iter()).enumerate()
+        {
             dbg!(&layout);
             pane.set_layout(layout);
+            // Generate a unique name for each pane.
+            pane.set_id(format!("{}:{}", self.video_id, id_suffix));
         }
     }
 
@@ -406,6 +454,12 @@ impl View {
     pub fn update(&mut self) {
         for pane in &mut self.panes {
             pane.update();
+        }
+    }
+
+    pub fn update_sync(&mut self, sync: &(String, SyncOperation)) {
+        for pane in &mut self.panes {
+            pane.update_sync(sync);
         }
     }
 
@@ -600,7 +654,7 @@ impl ViewControl {
                         self.select_previous_protocol();
                         true
                     }
-                    _ => false,
+                    _ => self.handle_translated_event(event),
                 }
             }
             _ => self.handle_translated_event(event),
@@ -690,7 +744,18 @@ impl ViewControl {
         }
     }
     pub fn update(&mut self) {
-        self.active_apply_mut(View::update);
+        let sync_update = self
+            .get_focused_view()
+            .and_then(|v| v.get_focused_pane())
+            .and_then(|pane| pane.update().map(|op| (pane.id().to_string(), op)));
+
+        if let Some(sync_update) = sync_update {
+            log::trace!("Running sync op from pane {}", &sync_update.0);
+            // Run the sync update.
+            self.active_apply_mut(|v| v.update_sync(&sync_update));
+        } else {
+            self.active_apply_mut(View::update);
+        }
     }
     pub fn push_state(&mut self) {
         self.active_apply_mut(View::push_state);
