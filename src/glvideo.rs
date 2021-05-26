@@ -61,9 +61,7 @@ impl GlRenderer {
         );
 
 
-        // TODO: Handle switching between color and greys
-        log::warn!("Will only use the force greyscale shader!");
-
+        // This program is not used anymore!
         let program_grey = Self::compile_program(
             &bindings,
             include_str!("shaders/glvert.glsl"),
@@ -212,6 +210,7 @@ impl GlRenderer {
 
         if use_grey {
             // Use a shader that ensures real greys!
+            log::warn!("Using a forced grey shader");
             self.bindings.UseProgram(self.program_grey);
         } else {
             self.bindings.UseProgram(self.program_argb);
@@ -370,11 +369,8 @@ impl GlRenderer {
             // Always clear the viewport.
             self.clear();
 
-            // For now always use grey
-            let use_grey = true;
-
             // Do the render, if there is a sample
-            sample.map(|sample| self.render(sample, use_grey));
+            sample.map(|sample| self.render(sample, false));
         }
         unsafe {
             self.bindings.Disable(gl::SCISSOR_TEST);

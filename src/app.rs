@@ -121,6 +121,17 @@ impl App {
             // let rtpbin = pipeline
             //     .get_by_name("rtpbin")
             //     .expect("Failed to get rtpbin");
+
+            // TODO: Handle configuring the latency in the buffer
+            // this helps A LOT for the problem of corrrupt frames!
+            // A too small buffer leads to that frames might be
+            // dropped while waiting for retransmission etc.
+            // this is likely what causes the large artifacts.
+
+            // rtpbin
+            //     .set_property("latency", &50_u32)
+            //     .expect("Failed to set latency");
+
             // rtpbin
             //     .set_property("do-retransmission", &true)
             //     .expect("Failed to set retransmission");
