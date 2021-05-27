@@ -345,12 +345,13 @@ impl App {
             .get_by_name(&format!("convert{}", mlineidx))
             .expect("Failed to get appsink");
 
-        let timer = ElementTimer::new(&format!("decoder-convert{}", mlineidx), depay, convert);
-        {
-            let mut shared = self.shared.lock().unwrap();
-            shared.timers.push(timer);
+        if log::log_enabled!(log::Level::Trace) {
+            let timer = ElementTimer::new(&format!("decoder-convert{}", mlineidx), depay, convert);
+            {
+                let mut shared = self.shared.lock().unwrap();
+                shared.timers.push(timer);
+            }
         }
-
         Ok(())
     }
 
