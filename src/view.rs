@@ -112,6 +112,18 @@ impl Pane {
                         );
                         true
                     }
+                    Some(VirtualKeyCode::C) => {
+                        self.interaction.toggle_cine();
+                        true
+                    }
+                    Some(VirtualKeyCode::I) => {
+                        self.interaction.adjust_cine_speec(1);
+                        true
+                    }
+                    Some(VirtualKeyCode::U) => {
+                        self.interaction.adjust_cine_speec(-1);
+                        true
+                    }
                     _ => false,
                 }
             }
@@ -200,6 +212,10 @@ impl Pane {
     pub fn set_viewstate(&mut self, state: ViewState) {
         self.interaction.set_render_state(state);
         self.dirty = true;
+    }
+
+    pub fn handle_timer_event(&mut self) -> bool {
+        self.interaction.cine_update()
     }
 }
 
@@ -522,6 +538,14 @@ impl View {
 
     pub fn invalidate(&mut self) {
         self.dirty = true;
+    }
+
+    pub fn handle_timer_event(&mut self) -> bool {
+        let mut need_update = false;
+        for pane in self.panes.iter_mut() {
+            need_update |= pane.handle_timer_event();
+        }
+        need_update
     }
 }
 
@@ -869,7 +893,6 @@ impl ViewControl {
 
         // Invalidate all views.
         self.invalidate();
-
     }
 
     pub fn set_datachannel(&mut self, datachannel: gst_webrtc::WebRTCDataChannel) {
@@ -1074,6 +1097,19 @@ impl ViewControl {
 
     pub fn invalidate(&mut self) {
         self.active_apply_mut(View::invalidate);
+    }
+
+    pub fn handle_timer_event(&mut self) {
+        // Let each View/Pane handle the timer event, then run update
+        let mut do_update = false;
+        for idx in &self.active {
+            let view = self.views.get_mut(*idx).expect("Failed to get view");
+            let needs_update = view.handle_timer_event();
+            do_update |= needs_update;
+        }
+        if do_update {
+            self.update();
+        }
     }
 }
 

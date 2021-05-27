@@ -1,4 +1,5 @@
 use crate::view_state::ViewState;
+use async_tungstenite::tungstenite::protocol::frame;
 use glutin::{
     dpi::PhysicalPosition,
     event::{ElementState, ModifiersState, MouseButton},
@@ -35,9 +36,15 @@ pub struct InteractionState {
     viewstate: ViewState,
 
     synchronized: bool,
+    cine: bool,
+    cine_timer: Option<std::time::Instant>,
+    cine_fps: f32,
 }
 
 impl InteractionState {
+    const CINE_FPS: f32 = 10f32;
+    const CINE_ADJUST: f32 = 10f32;
+
     pub fn new() -> Self {
         InteractionState {
             anchor: None,
@@ -52,6 +59,9 @@ impl InteractionState {
             image_count: None,
             viewstate: ViewState::new(),
             synchronized: false,
+            cine: false,
+            cine_timer: None,
+            cine_fps: Self::CINE_FPS,
         }
     }
 
@@ -121,13 +131,27 @@ impl InteractionState {
         if abs_delta != 0 {
             self.frame_acc = 0_f32;
         }
-        let frame_delta = delta_sign * abs_delta;
 
         let current_frame = self.viewstate.frame.unwrap_or(0) as i32;
-        // Need to check bounds.
-        let next_frame = (current_frame + frame_delta)
-            .max(0)
-            .min((self.image_count.unwrap_or(1) as i32) - 1); // We need the index of the frame
+        let image_count = self.image_count.unwrap_or(1) as i32;
+        let next_frame = if self.cine {
+            let frame_delta = delta_sign * (abs_delta % image_count);
+            let next_frame = current_frame + frame_delta;
+            if next_frame < 0 {
+                image_count + next_frame
+            } else if next_frame >= image_count {
+                next_frame - image_count
+            } else {
+                next_frame
+            }
+        } else {
+            let frame_delta = delta_sign * abs_delta;
+            let next_frame = current_frame + frame_delta;
+            next_frame.max(0).min(image_count - 1)
+        };
+        // let next_frame = (current_frame + frame_delta)
+        //     .max(0)
+        //     .min((self.image_count.unwrap_or(1) as i32) - 1); // We need the index of the frame
 
         // Return true if the frame has changed.
         if next_frame != current_frame {
@@ -245,6 +269,37 @@ impl InteractionState {
 
     pub fn is_synchronized(&self) -> bool {
         self.synchronized
+    }
+
+    pub fn toggle_cine(&mut self) {
+        self.cine = !self.cine;
+        self.cine_timer = if self.cine {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+    }
+
+    pub fn adjust_cine_speec(&mut self, direction: i32) {
+        self.cine_fps += (direction as f32) * Self::CINE_ADJUST;
+        println!("New cine FPS {}", self.cine_fps);
+    }
+
+    pub fn cine_update(&mut self) -> bool {
+        // Check if we are in cine-mode and update the frame accoringly (by setting a scroll delta)
+        // return true if we updated something.
+        if self.cine {
+            if let Some(timer) = &mut self.cine_timer {
+                // Check how far we should move
+                let frames = timer.elapsed().as_secs_f32() * self.cine_fps;
+                if frames.abs() >= 1f32 {
+                    self.scroll_delta = Some(-frames);
+                    *timer = std::time::Instant::now();
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 

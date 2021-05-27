@@ -756,6 +756,9 @@ impl App {
                         });
                     }
                     WindowMessage::Timer(_) => {
+                        // Let the control react to timer events.
+                        view_control.handle_timer_event();
+
                         view_control.push_state();
                     }
                     WindowMessage::UpdateLayout => {
