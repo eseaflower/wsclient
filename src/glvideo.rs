@@ -326,6 +326,13 @@ impl GlRenderer {
     }
 
     pub fn render_views(&mut self, control: &ViewControl) {
+
+        // Clear the window back-buffer before setting the scissor box.
+        // This ensures that the entire view is cleared.
+        self.clear();
+
+
+
         unsafe {
             self.bindings.Enable(gl::SCISSOR_TEST);
         }
@@ -367,7 +374,7 @@ impl GlRenderer {
             }
 
             // Always clear the viewport.
-            self.clear();
+            // self.clear();
 
             // Do the render, if there is a sample
             sample.map(|sample| self.render(sample, false));

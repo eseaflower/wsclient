@@ -519,6 +519,10 @@ impl View {
             pane.set_viewstate(state.1);
         }
     }
+
+    pub fn invalidate(&mut self) {
+        self.dirty = true;
+    }
 }
 
 #[derive(Debug)]
@@ -862,6 +866,10 @@ impl ViewControl {
         // Center the layout in the window.
         self.layout.x = ((size.0 as f32 - self.layout.width as f32) / 2_f32).max(0_f32) as u32;
         self.layout.y = ((size.1 as f32 - self.layout.height as f32) / 2_f32).max(0_f32) as u32;
+
+        // Invalidate all views.
+        self.invalidate();
+
     }
 
     pub fn set_datachannel(&mut self, datachannel: gst_webrtc::WebRTCDataChannel) {
@@ -1062,6 +1070,10 @@ impl ViewControl {
                 view.restore_parked(parked_view);
             }
         }
+    }
+
+    pub fn invalidate(&mut self) {
+        self.active_apply_mut(View::invalidate);
     }
 }
 
