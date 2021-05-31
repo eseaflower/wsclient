@@ -82,7 +82,8 @@ impl Pane {
                     position.x - layout_position.x as f64,
                     position.y - layout_position.y as f64,
                 );
-                self.interaction.handle_move(translated);
+                self.interaction
+                    .handle_move(translated, 1f32 / self.layout.height as f32);
                 true
             }
             WindowEvent::MouseInput { button, state, .. } => {
@@ -242,11 +243,12 @@ pub struct View {
     bitrate: f32,
     dirty: bool,
     layout: LayoutRect,
-    current_sample: Option<gst::Sample>,
+    current_sample: Option<ViewSample>,
     datachannel: Option<gst_webrtc::WebRTCDataChannel>,
     panes: Vec<Pane>,
     focus: Option<usize>,
     seq: u64,
+    timer: std::time::Instant,
 }
 
 impl View {
@@ -280,6 +282,7 @@ impl View {
             panes: vec![Pane::default()],
             focus: None,
             seq: 0,
+            timer: std::time::Instant::now(),
         }
     }
 
@@ -313,10 +316,11 @@ impl View {
         true
     }
 
-    fn accept_sample(&self, sample: &gst::Sample) -> bool {
+    fn accept_sample(&self, sample: &ViewSample) -> bool {
         if self.dirty {
             // Check if the size of the sample is within bounds.
             let info = sample
+                .sample
                 .get_caps()
                 .and_then(|caps| gst_video::VideoInfo::from_caps(caps).ok())
                 .unwrap();
@@ -330,7 +334,7 @@ impl View {
         }
     }
 
-    pub fn push_sample(&mut self, sample: gst::Sample) {
+    pub fn push_sample(&mut self, sample: ViewSample) {
         if self.accept_sample(&sample) {
             self.current_sample = Some(sample);
             self.dirty = false;
@@ -371,7 +375,7 @@ impl View {
         }
     }
 
-    pub fn get_current_sample(&self) -> Option<gst::Sample> {
+    pub fn get_current_sample(&self) -> Option<ViewSample> {
         // Check if we have a sample, if so create copy and return it.
         // clone() should be cheap since it is a reference to a texture id.
         self.current_sample.as_ref().map(Clone::clone)
@@ -488,16 +492,21 @@ impl View {
         }
     }
 
+    pub fn get_timestamp(&self) -> f32 {
+        (self.timer.elapsed().as_millis() % 1000) as f32
+    }
+
     pub fn push_state(&mut self) {
         let dirty = self.panes.iter().any(|p| p.dirty) || self.dirty;
         if dirty {
             let pane_states: Vec<_> = self.panes.iter_mut().map(|p| p.get_state()).collect();
+
             self.push_render_state(RenderState {
                 layout: self.layout.clone(),
                 seq: self.seq,
                 panes: pane_states,
                 snapshot: false,
-                timestamp: 0_f32,
+                timestamp: self.get_timestamp(),
             });
             // Increase the sequence number
             self.seq += 1;
@@ -913,7 +922,7 @@ impl ViewControl {
     pub fn push_sample(&mut self, sample: ViewSample) {
         // We should be able to find the view based on index.
         if let Some(view) = self.views.get_mut(sample.id) {
-            view.push_sample(sample.sample);
+            view.push_sample(sample);
         } else {
             log::error!("Failed to find view with index {}", sample.id);
         }

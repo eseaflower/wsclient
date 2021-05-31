@@ -111,15 +111,23 @@ impl Quad {
             .collect();
         v
     }
-
     pub fn map_texture_coords(&mut self, img_dims: (f32, f32), tex_dims: (f32, f32)) {
+        self.map_texture_coords_with_offset(img_dims, tex_dims, (0_f32, 0_f32));
+    }
+
+    pub fn map_texture_coords_with_offset(
+        &mut self,
+        img_dims: (f32, f32),
+        tex_dims: (f32, f32),
+        offset: (f32, f32),
+    ) {
         // Let u/v be indexes into the texture [0, tex_dim)
         let u = (img_dims.0 - 1.0) / tex_dims.0;
         let v = (img_dims.1 - 1.0) / tex_dims.1;
         // Offset to center of texture pixels. Add the offset to each texture coordinate.
         // (see https://stackoverflow.com/questions/5879403/opengl-texture-coordinates-in-pixel-space)
-        let offset_u = 1.0_f32 / (2.0 * tex_dims.0);
-        let offset_v = 1.0_f32 / (2.0 * tex_dims.1);
+        let offset_u = offset.0 + (1.0_f32 / (2.0 * tex_dims.0));
+        let offset_v = offset.1 + (1.0_f32 / (2.0 * tex_dims.1));
         self.vertices
             .iter_mut()
             .zip(Self::VERTICES.iter())
@@ -133,6 +141,27 @@ impl Quad {
         self.image_size = img_dims;
         self.texture_size = tex_dims;
     }
+    // pub fn map_texture_coords(&mut self, img_dims: (f32, f32), tex_dims: (f32, f32)) {
+    //     // Let u/v be indexes into the texture [0, tex_dim)
+    //     let u = (img_dims.0 - 1.0) / tex_dims.0;
+    //     let v = (img_dims.1 - 1.0) / tex_dims.1;
+    //     // Offset to center of texture pixels. Add the offset to each texture coordinate.
+    //     // (see https://stackoverflow.com/questions/5879403/opengl-texture-coordinates-in-pixel-space)
+    //     let offset_u = 1.0_f32 / (2.0 * tex_dims.0);
+    //     let offset_v = 1.0_f32 / (2.0 * tex_dims.1);
+    //     self.vertices
+    //         .iter_mut()
+    //         .zip(Self::VERTICES.iter())
+    //         .for_each(|(v1, v2)| {
+    //             v1.position = [v2.position[0] * img_dims.0, v2.position[1] * img_dims.1];
+    //             v1.tex_coords = [
+    //                 v2.tex_coords[0] * u + offset_u,
+    //                 v2.tex_coords[1] * v + offset_v,
+    //             ];
+    //         });
+    //     self.image_size = img_dims;
+    //     self.texture_size = tex_dims;
+    // }
 
     pub fn set_viewport_size(&mut self, size: (f32, f32)) {
         // Update the shader to screen transform.

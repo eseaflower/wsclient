@@ -24,6 +24,7 @@ mod vertex;
 mod view;
 mod view_state;
 mod window_message;
+mod text_renderer;
 
 #[derive(Debug)]
 pub struct AppConfig {

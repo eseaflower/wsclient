@@ -5,6 +5,7 @@ use std::time::Duration;
 pub struct ViewSample {
     pub sample: gstreamer::Sample,
     pub id: usize,
+    pub timer: std::time::Instant,
 }
 
 #[derive(Debug, Clone)]

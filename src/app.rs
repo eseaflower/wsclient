@@ -42,7 +42,7 @@ use crate::{
 struct SharedState {
     proxy: Option<EventLoopProxy<WindowMessage>>,
     timers: Vec<ElementTimer>,
-    samples: HashMap<usize, Option<gst::Sample>>,
+    samples: HashMap<usize, Option<ViewSample>>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,7 +284,14 @@ impl App {
                         let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                         let mut shared = app.shared.lock().unwrap();
                         // Set the sample in the slot for the mlineidx.
-                        shared.samples.insert(mlineidx as usize, Some(sample));
+                        shared.samples.insert(
+                            mlineidx as usize,
+                            Some(ViewSample {
+                                sample,
+                                id: mlineidx as _,
+                                timer: std::time::Instant::now(),
+                            }),
+                        );
 
                         shared.proxy.as_ref().map(|proxy| {
                             proxy
@@ -359,7 +366,7 @@ impl App {
         let mut shared = self.shared.lock().unwrap();
         if let Some(sample) = shared.samples.get_mut(&index) {
             // Take the last sample and move it out
-            sample.take().map(|sample| ViewSample { id: index, sample })
+            sample.take()
         } else {
             None
         }
@@ -694,7 +701,7 @@ impl App {
         let mut own_context: Option<gst_gl::GLContext> = Some(own_context);
 
         // Start a timer to get reliable callbacks on the event loop
-        let interactions_per_second = 60;
+        let interactions_per_second = 61;
         let request_timeout_ms = (1000_f32 / interactions_per_second as f32).floor() as u64;
         let timer = WindowTimer::new(
             event_loop.create_proxy(),

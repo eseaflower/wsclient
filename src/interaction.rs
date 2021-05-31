@@ -22,6 +22,8 @@ pub enum SyncOperation {
 pub struct InteractionState {
     anchor: Option<PhysicalPosition<f64>>,
     mouse_position: Option<PhysicalPosition<f64>>,
+    mouse_scale: f32,
+
     scroll_delta: Option<f32>,
     frame_acc: f32,
 
@@ -49,6 +51,7 @@ impl InteractionState {
         InteractionState {
             anchor: None,
             mouse_position: None,
+            mouse_scale: 1f32,
             scroll_delta: None,
             frame_acc: 0_f32,
             left_mouse: false,
@@ -70,8 +73,9 @@ impl InteractionState {
         self.viewstate.set_frame(Some(0));
     }
 
-    pub fn handle_move(&mut self, position: PhysicalPosition<f64>) {
+    pub fn handle_move(&mut self, position: PhysicalPosition<f64>, scale: f32) {
         self.mouse_position = Some(position);
+        self.mouse_scale = scale;
     }
 
     pub fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState) {
@@ -224,7 +228,10 @@ impl InteractionState {
                 }
                 InteractionMode::FastScroll => {
                     if let Some(movement) = movement {
-                        let delta = movement.1 as f32 / 10.0_f32;
+                        // let delta = (movement.1 as f32 / 10.0_f32) * self.mouse_scale;
+                        let delta = (movement.1 as f32)
+                            * self.mouse_scale
+                            * self.image_count.unwrap_or(1) as f32;
                         // Use delta to move the frames forward.
                         let frame_diff = self.update_frame(delta);
                         if frame_diff != 0 {

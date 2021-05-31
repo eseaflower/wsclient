@@ -6,6 +6,7 @@ use gstreamer_video as gst_video;
 use view_state::Zoom;
 
 use crate::{
+    text_renderer::{Partition, TextPartition, TextRenderer},
     vertex::{self, Quad},
     view::ViewControl,
     view_state::{self, ViewState},
@@ -25,11 +26,17 @@ pub struct GlRenderer {
     _image_index_buffer: u32,
     program_argb: u32,
     program_grey: u32,
+    program_text: u32,
     quad: Quad,
     state: ViewState,
     own_ctx: gst_gl::GLContext,
     pipe_ctx: gst_gl::GLContext,
     window_size: (u32, u32),
+    text_vao: u32,
+    text_vertex_buffer: u32,
+    text_index_buffer: u32,
+    text_vertex_buffer_len: usize,
+    text_renderer: TextRenderer,
 }
 
 impl GlRenderer {
@@ -60,16 +67,23 @@ impl GlRenderer {
             include_str!("shaders/glfrag_argb.glsl"),
         );
 
-
         // This program is not used anymore!
         let program_grey = Self::compile_program(
             &bindings,
             include_str!("shaders/glvert.glsl"),
             include_str!("shaders/glfrag_argb_grey.glsl"),
         );
+        let program_text = Self::compile_program(
+            &bindings,
+            include_str!("shaders/glvert_text.glsl"),
+            include_str!("shaders/glfrag_text.glsl"),
+        );
+        let (image_vao, image_vertex_buffer, image_index_buffer) =
+            Self::create_vao(&bindings, true);
+        // We need dynamic sizes of the vertex-/index-buffers.
+        let (text_vao, text_vertex_buffer, text_index_buffer) = Self::create_vao(&bindings, false);
 
-        let (image_vao, image_vertex_buffer, image_index_buffer) = Self::create_vao(&bindings);
-
+        let text_renderer = TextRenderer::new(&bindings);
         let mut state = ViewState::new();
         state.set_zoom_mode(Zoom::Pixel(1.0_f32));
 
@@ -85,6 +99,12 @@ impl GlRenderer {
             own_ctx,
             pipe_ctx,
             window_size: (0, 0),
+            program_text,
+            text_vao,
+            text_vertex_buffer,
+            text_vertex_buffer_len: 0,
+            text_index_buffer,
+            text_renderer,
         }
     }
 
@@ -122,7 +142,7 @@ impl GlRenderer {
         }
         shader
     }
-    unsafe fn create_vao(bindings: &gl::Gl) -> (u32, u32, u32) {
+    unsafe fn create_vao(bindings: &gl::Gl, single_quad: bool) -> (u32, u32, u32) {
         // Generate Vertex Array Object, this stores buffers/pointers/indexes
         let mut vao = mem::MaybeUninit::uninit();
         bindings.GenVertexArrays(1, vao.as_mut_ptr());
@@ -135,25 +155,31 @@ impl GlRenderer {
         bindings.GenBuffers(1, quad_vertex_buffer.as_mut_ptr());
         let quad_vertex_buffer = quad_vertex_buffer.assume_init();
         bindings.BindBuffer(gl::ARRAY_BUFFER, quad_vertex_buffer);
-        bindings.BufferData(
-            gl::ARRAY_BUFFER,
-            (Quad::VERTICES.len() * mem::size_of::<vertex::Vertex>()) as _,
-            // vertex::VERTICES.as_ptr() as _,
-            ptr::null() as _,
-            gl::STREAM_DRAW,
-        );
+        // For a single quad we can allocate the buffer directly
+        if single_quad {
+            bindings.BufferData(
+                gl::ARRAY_BUFFER,
+                (Quad::VERTICES.len() * mem::size_of::<vertex::Vertex>()) as _,
+                // vertex::VERTICES.as_ptr() as _,
+                ptr::null() as _,
+                gl::STREAM_DRAW,
+            );
+        }
 
         // Create Index Buffer
         let mut quad_index_buffer = mem::MaybeUninit::uninit();
         bindings.GenBuffers(1, quad_index_buffer.as_mut_ptr());
         let quad_index_buffer = quad_index_buffer.assume_init();
         bindings.BindBuffer(gl::ELEMENT_ARRAY_BUFFER, quad_index_buffer);
-        bindings.BufferData(
-            gl::ELEMENT_ARRAY_BUFFER,
-            (Quad::INDICES.len() * mem::size_of::<u16>()) as _,
-            Quad::INDICES.as_ptr() as _, // Set the index buffer statically
-            gl::STATIC_DRAW,
-        );
+        // For a single quad we can allocate and fill the buffer statically.
+        if single_quad {
+            bindings.BufferData(
+                gl::ELEMENT_ARRAY_BUFFER,
+                (Quad::INDICES.len() * mem::size_of::<u16>()) as _,
+                Quad::INDICES.as_ptr() as _, // Set the index buffer statically
+                gl::STATIC_DRAW,
+            );
+        }
         // Setup attribute pointers while the VAO is bound to record this.
 
         // The position is in layout=0 in the shader
@@ -186,9 +212,89 @@ impl GlRenderer {
         bindings.DisableVertexAttribArray(1);
         (vao, quad_vertex_buffer, quad_index_buffer)
     }
+    // unsafe fn create_vao(bindings: &gl::Gl) -> (u32, u32, u32) {
+    //     // Generate Vertex Array Object, this stores buffers/pointers/indexes
+    //     let mut vao = mem::MaybeUninit::uninit();
+    //     bindings.GenVertexArrays(1, vao.as_mut_ptr());
+    //     let vao = vao.assume_init();
+    //     // Bind the VAO (it "records" which buffers to use to draw)
+    //     bindings.BindVertexArray(vao);
+
+    //     // Create Vertex Buffer
+    //     let mut quad_vertex_buffer = mem::MaybeUninit::uninit();
+    //     bindings.GenBuffers(1, quad_vertex_buffer.as_mut_ptr());
+    //     let quad_vertex_buffer = quad_vertex_buffer.assume_init();
+    //     bindings.BindBuffer(gl::ARRAY_BUFFER, quad_vertex_buffer);
+    //     bindings.BufferData(
+    //         gl::ARRAY_BUFFER,
+    //         (Quad::VERTICES.len() * mem::size_of::<vertex::Vertex>()) as _,
+    //         // vertex::VERTICES.as_ptr() as _,
+    //         ptr::null() as _,
+    //         gl::STREAM_DRAW,
+    //     );
+
+    //     // Create Index Buffer
+    //     let mut quad_index_buffer = mem::MaybeUninit::uninit();
+    //     bindings.GenBuffers(1, quad_index_buffer.as_mut_ptr());
+    //     let quad_index_buffer = quad_index_buffer.assume_init();
+    //     bindings.BindBuffer(gl::ELEMENT_ARRAY_BUFFER, quad_index_buffer);
+    //     bindings.BufferData(
+    //         gl::ELEMENT_ARRAY_BUFFER,
+    //         (Quad::INDICES.len() * mem::size_of::<u16>()) as _,
+    //         Quad::INDICES.as_ptr() as _, // Set the index buffer statically
+    //         gl::STATIC_DRAW,
+    //     );
+    //     // Setup attribute pointers while the VAO is bound to record this.
+
+    //     // The position is in layout=0 in the shader
+    //     bindings.VertexAttribPointer(
+    //         0,
+    //         vertex::NUM_VERTEX_COORDS as _,
+    //         gl::FLOAT,
+    //         gl::FALSE,
+    //         mem::size_of::<vertex::Vertex>() as _,
+    //         ptr::null(),
+    //     );
+    //     // Texture coords in layout=1
+    //     bindings.VertexAttribPointer(
+    //         1,
+    //         vertex::NUM_TEX_COORDS as _,
+    //         gl::FLOAT,
+    //         gl::FALSE,
+    //         mem::size_of::<vertex::Vertex>() as _,
+    //         (vertex::NUM_VERTEX_COORDS * mem::size_of::<f32>()) as _,
+    //     );
+    //     // Enable attribute 0
+    //     bindings.EnableVertexAttribArray(0);
+    //     bindings.EnableVertexAttribArray(1);
+
+    //     // Unbind the VAO BEFORE! unbinding the vertex- and index-buffers
+    //     bindings.BindVertexArray(0);
+    //     bindings.BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
+    //     bindings.BindBuffer(gl::ARRAY_BUFFER, 0);
+    //     bindings.DisableVertexAttribArray(0);
+    //     bindings.DisableVertexAttribArray(1);
+    //     (vao, quad_vertex_buffer, quad_index_buffer)
+    // }
+
+    // unsafe fn update_vertex_buffer(&self, buffer: u32, vertices: &[vertex::Vertex]) {
+    //     assert!(vertices.len() == Quad::VERTICES.len()); // Make sure the vertices match
+    //     self.bindings.BindBuffer(gl::ARRAY_BUFFER, buffer);
+    //     self.bindings.BufferSubData(
+    //         gl::ARRAY_BUFFER,
+    //         0,
+    //         (vertices.len() * mem::size_of::<vertex::Vertex>()) as _,
+    //         vertices.as_ptr() as _,
+    //     );
+
+    //     self.bindings.BindBuffer(gl::ARRAY_BUFFER, 0);
+    // }
+
+    // unsafe fn update_image_vertex_buffer(&self, vertices: &[vertex::Vertex]) {
+    //     self.update_vertex_buffer(self.image_vertex_buffer, vertices);
+    // }
 
     unsafe fn update_vertex_buffer(&self, buffer: u32, vertices: &[vertex::Vertex]) {
-        assert!(vertices.len() == Quad::VERTICES.len()); // Make sure the vertices match
         self.bindings.BindBuffer(gl::ARRAY_BUFFER, buffer);
         self.bindings.BufferSubData(
             gl::ARRAY_BUFFER,
@@ -201,7 +307,56 @@ impl GlRenderer {
     }
 
     unsafe fn update_image_vertex_buffer(&self, vertices: &[vertex::Vertex]) {
+        assert!(vertices.len() == Quad::VERTICES.len()); // Make sure the vertices match
         self.update_vertex_buffer(self.image_vertex_buffer, vertices);
+    }
+
+    unsafe fn update_text_vertex_buffer(&mut self, vertices: &[vertex::Vertex], indicies: &[u16]) {
+        if vertices.len() > self.text_vertex_buffer_len {
+            // Need to allocate a new buffer.
+            self.bindings
+                .BindBuffer(gl::ARRAY_BUFFER, self.text_vertex_buffer);
+            self.bindings.BufferData(
+                gl::ARRAY_BUFFER,
+                (vertices.len() * mem::size_of::<vertex::Vertex>()) as _,
+                vertices.as_ptr() as _,
+                gl::STREAM_DRAW,
+            );
+            self.bindings.BindBuffer(gl::ARRAY_BUFFER, 0);
+            self.text_vertex_buffer_len = vertices.len();
+
+            // Update the size of the index buffer
+            self.bindings
+                .BindBuffer(gl::ELEMENT_ARRAY_BUFFER, self.text_index_buffer);
+            self.bindings.BufferData(
+                gl::ELEMENT_ARRAY_BUFFER,
+                (indicies.len() * mem::size_of::<u16>()) as _,
+                indicies.as_ptr() as _, // Set the index buffer statically
+                gl::STREAM_DRAW,
+            );
+            self.bindings.BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
+        } else {
+            // We have enough space in the existing buffers.
+            self.bindings
+                .BindBuffer(gl::ARRAY_BUFFER, self.text_vertex_buffer);
+            self.bindings.BufferSubData(
+                gl::ARRAY_BUFFER,
+                0,
+                (vertices.len() * mem::size_of::<vertex::Vertex>()) as _,
+                vertices.as_ptr() as _,
+            );
+            self.bindings.BindBuffer(gl::ARRAY_BUFFER, 0);
+            // Move index data
+            self.bindings
+                .BindBuffer(gl::ELEMENT_ARRAY_BUFFER, self.text_index_buffer);
+            self.bindings.BufferSubData(
+                gl::ELEMENT_ARRAY_BUFFER,
+                0,
+                (indicies.len() * mem::size_of::<u16>()) as _,
+                indicies.as_ptr() as _,
+            );
+            self.bindings.BindBuffer(gl::ELEMENT_ARRAY_BUFFER, 0);
+        }
     }
 
     unsafe fn draw_image(&self, vertices: &[vertex::Vertex], image_texture: u32, use_grey: bool) {
@@ -262,8 +417,60 @@ impl GlRenderer {
     //     self.bindings.UseProgram(0);
     //     self.bindings.Disable(gl::BLEND);
     // }
+    unsafe fn draw_text(&mut self, text: Vec<TextPartition>) {
+        // Get the viewport size from the first
+        let viewport_size = text
+            .first()
+            .map(|p| p.viewport())
+            .expect("Failed to get viewport size from partition");
 
-    pub fn draw(&self, image_vertices: Vec<vertex::Vertex>, image_texture: u32, use_grey: bool) {
+        // Get the dynamic content from the text renderer
+        let (texture_id, vertices, indicies) = self.text_renderer.draw(
+            &self.bindings,
+            text.iter().map(|partition| partition.section()).collect(),
+            viewport_size,
+        );
+
+        // Update the vertex and index buffers.
+        self.update_text_vertex_buffer(&vertices, &indicies);
+
+        // let err = self.bindings.GetError();
+        // assert_eq!(err, gl::NO_ERROR);
+
+        // Enable blending to get a transparent pointer
+        self.bindings
+            .BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        self.bindings.Enable(gl::BLEND);
+
+        self.bindings.UseProgram(self.program_text);
+        self.bindings.BindVertexArray(self.text_vao);
+
+        // Activate and bind the textures
+        self.bindings.ActiveTexture(gl::TEXTURE0); // Activate texture unit 0
+        self.bindings.BindTexture(gl::TEXTURE_2D, texture_id);
+
+        self.bindings.DrawElements(
+            gl::TRIANGLES,
+            indicies.len() as _,
+            gl::UNSIGNED_SHORT,
+            ptr::null(),
+        );
+
+        // Unbind resources
+        self.bindings.BindVertexArray(0);
+        self.bindings.ActiveTexture(gl::TEXTURE0); // Activate texture unit 0
+        self.bindings.BindTexture(gl::TEXTURE_2D, 0);
+        self.bindings.UseProgram(0);
+        self.bindings.Disable(gl::BLEND);
+    }
+
+    pub fn draw(
+        &mut self,
+        image_vertices: Vec<vertex::Vertex>,
+        image_texture: u32,
+        use_grey: bool,
+        text: Option<Vec<TextPartition>>,
+    ) {
         unsafe {
             // Draw the image
             self.draw_image(&image_vertices, image_texture, use_grey);
@@ -271,6 +478,9 @@ impl GlRenderer {
             // if let Some(pointer_vertices) = pointer_vertices {
             //     self.draw_pointer(&pointer_vertices);
             // }
+            if let Some(text) = text {
+                self.draw_text(text);
+            }
         }
     }
 
@@ -289,7 +499,12 @@ impl GlRenderer {
         self.quad.map_texture_coords(size, size);
     }
 
-    pub fn render(&self, sample: gst::Sample, use_grey: bool) {
+    pub fn render(
+        &mut self,
+        sample: gst::Sample,
+        use_grey: bool,
+        text: Option<Vec<TextPartition>>,
+    ) {
         // Get the texture id from the sample.
 
         let buffer = sample.get_buffer_owned().unwrap();
@@ -320,18 +535,15 @@ impl GlRenderer {
 
                 // Compute the vertices to use
                 let image_vertices = self.quad.get_vertex(&self.state);
-                self.draw(image_vertices, image_texture, use_grey);
+                self.draw(image_vertices, image_texture, use_grey, text);
             }
         }
     }
 
     pub fn render_views(&mut self, control: &ViewControl) {
-
         // Clear the window back-buffer before setting the scissor box.
         // This ensures that the entire view is cleared.
         self.clear();
-
-
 
         unsafe {
             self.bindings.Enable(gl::SCISSOR_TEST);
@@ -340,15 +552,28 @@ impl GlRenderer {
         // Get the position of the ViewControl
         let control_layout = control.get_layout();
 
-        let view_samples =
-            control.active_map(|view| (view.get_current_sample(), view.get_layout()));
+        let view_samples = control.active_map(|view| {
+            (
+                view.get_current_sample(),
+                view.get_layout(),
+                view.get_timestamp(),
+            )
+        });
 
-        for (sample, view_layout) in view_samples {
+        for (sample, view_layout, timestamp) in view_samples {
             // Check if we have a sample
 
             let view_size = (view_layout.width as f32, view_layout.height as f32);
             self.set_viewport_size(view_size);
             self.set_frame_size(view_size);
+
+            let text = if log::log_enabled!(log::Level::Debug) {
+                let mut text = TextPartition::new(Partition::BR, view_size);
+                text.add_text(vec![&format!("C: {}", timestamp), "_"]);
+                Some(vec![text])
+            } else {
+                None
+            };
 
             // Compute the postion for the view
             let top = control_layout.y + view_layout.y;
@@ -373,11 +598,8 @@ impl GlRenderer {
                 );
             }
 
-            // Always clear the viewport.
-            // self.clear();
-
             // Do the render, if there is a sample
-            sample.map(|sample| self.render(sample, false));
+            sample.map(|sample| self.render(sample.sample, false, text));
         }
         unsafe {
             self.bindings.Disable(gl::SCISSOR_TEST);

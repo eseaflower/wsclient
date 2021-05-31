@@ -30,6 +30,7 @@ spin_sleep = "1.0"
 #winit = "0.24"
 raw-window-handle = "0.3"
 glutin = "0.26"
+glyph_brush = "0.7"
 
 [build-dependencies]
 gl_generator = { version = "0.14" }
