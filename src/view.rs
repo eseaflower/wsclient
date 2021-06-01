@@ -583,7 +583,7 @@ impl View {
         let bitrate_mb = bitrate_kb / 1_000f32;
         // Quantize into 0.5 MB bins.
         let bitrate_mb = (bitrate_mb * 2f32).round() / 2f32;
-        println!(
+        log::trace!(
             "Pixel area {} -> bitrate_kb {} -> bitrate_mb {}",
             pixel_area, bitrate_kb, bitrate_mb
         );
