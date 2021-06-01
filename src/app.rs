@@ -54,7 +54,7 @@ pub struct AppInner {
     pipeline: gst::Pipeline,
     shared: Mutex<SharedState>,
     tcp: bool,
-    hw: bool,
+    decoder: Decoder,
 }
 
 impl Deref for App {
@@ -68,8 +68,21 @@ impl Drop for AppInner {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
+
+#[derive(Debug, Copy, Clone)]
+pub enum Decoder {
+    Software,
+    Hardware,
+    FastSoftware,
+}
+
 impl App {
-    pub fn new(signaller: UnboundedSender<AppMessage>, tcp: bool, hw: bool) -> Self {
+    pub fn new(
+        signaller: UnboundedSender<AppMessage>,
+        tcp: bool,
+        decoder: Decoder,
+        jitter: u32,
+    ) -> Self {
         let pipeline = gst::Pipeline::new(None);
         let webrtcbin = gst::ElementFactory::make("webrtcbin", Some("webrtcbin"))
             .expect("Failed to create webrtcbin");
@@ -80,7 +93,7 @@ impl App {
         webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
 
         if tcp {
-            println!("Disabling UDP, using TCP");
+            log::debug!("Disabling UDP, using TCP");
 
             let agent = webrtcbin
                 .get_property("ice-agent")
@@ -104,7 +117,7 @@ impl App {
         // rtpbin.set_property_from_str("buffer-mode", "synced");
         } else {
             // For UDP transfer we need some mechanisms to handle missing packets
-            println!("Allowing UDP, adding NACKs");
+            log::debug!("Allowing UDP, adding NACKs");
             webrtcbin
                 .connect("on-new-transceiver", false, move |vals| {
                     log::debug!("Got transceiver callback, setting nack");
@@ -147,8 +160,10 @@ impl App {
             .get_by_name("rtpbin")
             .expect("Failed to get rtpbin");
 
-        println!("Setting 'synced' rtpjitterbuffer mode");
+        log::debug!("Setting 'synced' rtpjitterbuffer mode");
         rtpbin.set_property_from_str("buffer-mode", "synced");
+        log::debug!("Setting jitter buffer latency to {}", jitter);
+        rtpbin.set_property("property_name", &jitter);
 
         // END TODO
 
@@ -162,7 +177,7 @@ impl App {
                 samples: HashMap::default(),
             }),
             tcp,
-            hw,
+            decoder,
         };
         let app = App(Arc::new(inner));
 
@@ -234,7 +249,7 @@ impl App {
         });
 
         self.webrtcbin.connect_pad_removed(|_, _| {
-            println!("Pad removed...");
+            log::debug!("Pad removed...");
         });
     }
 
@@ -257,7 +272,12 @@ impl App {
         //  ! rtph264depay name=depay ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! d3d11upload ! d3d11videosink";
 
         // let pipeline_description = "rtph264depay name=depay ! h264parse ! avdec_h264 ! d3d11upload ! d3d11convert ! d3d11videosink sync=false";
-        let decoder_template = if self.hw { "nvh264dec" } else { "openh264dec" };
+        let decoder_template = match self.decoder {
+            Decoder::Software => "openh264dec",
+            Decoder::Hardware => "nvh264dec",
+            Decoder::FastSoftware => "avdec_h264 qos=true",
+        };
+
         let pipeline_template =
             "rtph264depay name=depay{idx} ! h264parse name=parse{idx} config-interval=-1 ! {decoder_tpl} name=decoder{idx} ! glupload name=upload{idx} ! glcolorconvert name=convert{idx} ! appsink name=appsink{idx}";
         // Get the selected decoder

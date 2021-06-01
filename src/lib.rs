@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
-use app::{App, AppInner};
+use app::{App, AppInner, Decoder};
 use async_std::task::JoinHandle;
 use async_tungstenite::{async_std::connect_async, tungstenite::Message};
 use futures::{
@@ -19,12 +19,12 @@ mod bindings;
 mod glvideo;
 mod interaction;
 mod message;
+mod text_renderer;
 mod util;
 mod vertex;
 mod view;
 mod view_state;
 mod window_message;
-mod text_renderer;
 
 #[derive(Debug)]
 pub struct AppConfig {
@@ -32,14 +32,15 @@ pub struct AppConfig {
     case_key: Option<String>,
     protocol_key: Option<String>,
     ws_url: String,
-    bitrate: f32,
+    bitrate_scale: f32,
     gpu: bool,
     preset: String,
     lossless: bool,
     video_scaling: f32,
     narrow: bool,
     tcp: bool,
-    client_hw: bool,
+    decoder: Decoder,
+    jitter: u32,
 }
 impl AppConfig {
     pub fn new(
@@ -47,7 +48,7 @@ impl AppConfig {
         viewport_size: (u32, u32),
         case_key: Option<String>,
         protocol_key: Option<String>,
-        bitrate: f32,
+        bitrate_scale: f32,
         gpu: bool,
         preset: String,
         lossless: bool,
@@ -55,20 +56,30 @@ impl AppConfig {
         narrow: bool,
         tcp: bool,
         client_hw: bool,
+        fast_sw_decode: bool,
+        jitter: u32,
     ) -> Self {
+        let decoder = if fast_sw_decode {
+            Decoder::FastSoftware
+        } else if client_hw {
+            Decoder::Hardware
+        } else {
+            Decoder::Software
+        };
         Self {
             ws_url,
             viewport_size,
             case_key,
             protocol_key,
-            bitrate,
+            bitrate_scale,
             gpu,
             preset,
             lossless,
             video_scaling,
             narrow,
             tcp,
-            client_hw,
+            decoder,
+            jitter,
         }
     }
 }
@@ -146,7 +157,7 @@ pub fn run(config: AppConfig) -> Result<()> {
 
     // Create the views that we want connected.
     let (snd, rcv) = unbounded::<AppMessage>();
-    let app = App::new(snd, config.tcp, config.client_hw);
+    let app = App::new(snd, config.tcp, config.decoder, config.jitter);
 
     let signal_thread = run_signalling(config.ws_url.clone(), Arc::downgrade(&app.0), rcv);
 

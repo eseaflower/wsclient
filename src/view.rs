@@ -240,7 +240,7 @@ pub struct View {
     lossless: bool,
     video_scaling: f32,
     fullrange: bool,
-    bitrate: f32,
+    bitrate_scale: f32,
     dirty: bool,
     layout: LayoutRect,
     current_sample: Option<ViewSample>,
@@ -252,10 +252,13 @@ pub struct View {
 }
 
 impl View {
+    const BITRATE_SCALE_DELTA: f32 = 0.1;
+    const BITRATE_PIXELS_PER_KB: f32 = 170f32;
+
     pub fn new(
         video_id: usize,
         layout: LayoutRect,
-        bitrate: f32,
+        bitrate_scale: f32,
         gpu: bool,
         preset: String,
         lossless: bool,
@@ -277,7 +280,7 @@ impl View {
             layout,
             current_sample: None,
             datachannel: None,
-            bitrate,
+            bitrate_scale,
             dirty: false,
             panes: vec![Pane::default()],
             focus: None,
@@ -366,7 +369,7 @@ impl View {
                 width: self.layout.width as _,
                 height: self.layout.height as _,
             },
-            bitrate: self.bitrate,
+            bitrate: self.get_bitrate(),
             gpu: self.gpu,
             preset: self.preset.clone(),
             lossless: self.lossless,
@@ -461,6 +464,20 @@ impl View {
                 };
                 self.handle_translated_event(&event)
             }
+            WindowEvent::KeyboardInput { input, .. } if input.state == ElementState::Pressed => {
+                match input.virtual_keycode {
+                    Some(VirtualKeyCode::B) => {
+                        self.adjust_bitrate_scaling(1);
+                        true
+                    }
+                    Some(VirtualKeyCode::V) => {
+                        self.adjust_bitrate_scaling(-1);
+                        true
+                    }
+                    _ => self.handle_translated_event(event),
+                }
+            }
+
             _ => self.handle_translated_event(event),
         }
     }
@@ -507,6 +524,7 @@ impl View {
                 panes: pane_states,
                 snapshot: false,
                 timestamp: self.get_timestamp(),
+                bitrate: self.get_bitrate(),
             });
             // Increase the sequence number
             self.seq += 1;
@@ -556,6 +574,28 @@ impl View {
         }
         need_update
     }
+
+    fn get_bitrate(&self) -> f32 {
+        // Use the bitrate scaling and the viewport area
+        // to compute the actual bitrate.
+        let pixel_area = self.layout.width * self.layout.height;
+        let bitrate_kb = (pixel_area as f32 / Self::BITRATE_PIXELS_PER_KB) * self.bitrate_scale;
+        let bitrate_mb = bitrate_kb / 1_000f32;
+        // Quantize into 0.5 MB bins.
+        let bitrate_mb = (bitrate_mb * 2f32).round() / 2f32;
+        println!(
+            "Pixel area {} -> bitrate_kb {} -> bitrate_mb {}",
+            pixel_area, bitrate_kb, bitrate_mb
+        );
+
+        bitrate_mb
+    }
+
+    pub fn adjust_bitrate_scaling(&mut self, direction: i32) {
+        self.bitrate_scale += direction as f32 * Self::BITRATE_SCALE_DELTA;
+        self.bitrate_scale = self.bitrate_scale.max(0.1);
+        println!("Setting new bitrate scale {}", self.bitrate_scale);
+    }
 }
 
 #[derive(Debug)]
@@ -590,7 +630,7 @@ impl ViewControl {
                         width: Self::DEFAULT_VIEW_WIDTH,
                         height: Self::DEFAULT_VIEW_HEIGHT,
                     },
-                    config.bitrate,
+                    config.bitrate_scale,
                     config.gpu,
                     config.preset.clone(),
                     config.lossless,
@@ -730,7 +770,6 @@ impl ViewControl {
                 let time_since_last_click = self.last_click.elapsed().as_millis();
                 self.last_click = std::time::Instant::now();
                 if time_since_last_click < 200 {
-                    println!("Double-click detected");
                     self.toggle_1x1();
                     true
                 } else {
@@ -1061,7 +1100,7 @@ impl ViewControl {
     fn toggle_1x1(&mut self) {
         if self.parked.is_some() {
             // Restore previous parked state
-            println!("Restoring parked views");
+            log::debug!("Restoring parked views");
             self.restore_parked();
         } else {
             let focused_settings = self.get_focused_view().and_then(|v| {
@@ -1074,7 +1113,7 @@ impl ViewControl {
 
                 // Save state to restore.
                 self.park_state();
-                println!("Parking views");
+                log::debug!("Parking views");
 
                 self.partition(1, 1);
                 self.active_apply_mut(|v| {

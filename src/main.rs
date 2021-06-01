@@ -13,8 +13,8 @@ struct Opt {
     width: u32,
     #[structopt(long, default_value = "480")]
     height: u32,
-    #[structopt(long, default_value = "4.0")]
-    bitrate: f32,
+    #[structopt(long, default_value = "1.0")]
+    bitrate_scale: f32,
     #[structopt(long)]
     cpu: bool,
     #[structopt(long, default_value = "default")]
@@ -29,6 +29,10 @@ struct Opt {
     tcp: bool,
     #[structopt(long)]
     client_hw: bool,
+    #[structopt(long)]
+    fast_sw: bool,
+    #[structopt(long, default_value = "200")]
+    jitter: u32,
 }
 
 fn main() -> Result<()> {
@@ -40,7 +44,7 @@ fn main() -> Result<()> {
         (opt.width, opt.height),
         opt.case,
         opt.protocol,
-        opt.bitrate,
+        opt.bitrate_scale,
         !opt.cpu,
         opt.preset,
         opt.lossless,
@@ -48,6 +52,8 @@ fn main() -> Result<()> {
         opt.narrow,
         opt.tcp,
         opt.client_hw,
+        opt.fast_sw,
+        opt.jitter,
     );
     log::info!("Running with config: {:?}", &config);
     wsclient::run(config)
