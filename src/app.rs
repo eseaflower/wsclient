@@ -275,11 +275,11 @@ impl App {
         let decoder_template = match self.decoder {
             Decoder::Software => "openh264dec",
             Decoder::Hardware => "nvh264dec",
-            Decoder::FastSoftware => "avdec_h264 qos=true",
+            Decoder::FastSoftware => "avdec_h264",
         };
 
         let pipeline_template =
-            "rtph264depay name=depay{idx} ! h264parse name=parse{idx} config-interval=-1 ! {decoder_tpl} name=decoder{idx} ! glupload name=upload{idx} ! glcolorconvert name=convert{idx} ! appsink name=appsink{idx}";
+            "rtph264depay name=depay{idx} ! h264parse name=parse{idx} config-interval=-1 ! {decoder_tpl} name=decoder{idx} qos=true ! queue ! glupload name=upload{idx} ! glcolorconvert name=convert{idx} ! appsink name=appsink{idx}";
         // Get the selected decoder
         let pipeline_template = pipeline_template.replace("{decoder_tpl}", decoder_template);
         let pipeline_description = pipeline_template.replace("{idx}", &mlineidx.to_string());
@@ -410,7 +410,7 @@ impl App {
                     candidate,
                 };
 
-                dbg!(&msg);
+                // dbg!(&msg);
 
                 app.send_app_message(msg)
                     .expect("Failed to send ice candidate");

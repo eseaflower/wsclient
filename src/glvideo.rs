@@ -64,7 +64,8 @@ impl GlRenderer {
         let program_argb = Self::compile_program(
             &bindings,
             include_str!("shaders/glvert.glsl"),
-            include_str!("shaders/glfrag_argb.glsl"),
+            include_str!("shaders/glfrag_argb_scaling.glsl"),
+            // include_str!("shaders/glfrag_argb.glsl"),
         );
 
         // This program is not used anymore!
@@ -376,8 +377,16 @@ impl GlRenderer {
         self.bindings.ActiveTexture(gl::TEXTURE0); // Activate texture unit 0
         self.bindings.BindTexture(gl::TEXTURE_2D, image_texture);
 
-        // self.bindings.ActiveTexture(gl::TEXTURE0 + 1);
-        // self.bindings.BindTexture(gl::TEXTURE_2D, lut_texture);
+        // Set texture parameters on the sent in texture!
+        self.bindings
+            .TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as _);
+        self.bindings
+            .TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as _);
+        self.bindings
+            .TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as _);
+        self.bindings
+            .TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as _);
+
 
         self.bindings
             .DrawElements(gl::TRIANGLES, 6, gl::UNSIGNED_SHORT, ptr::null());
@@ -386,8 +395,6 @@ impl GlRenderer {
         self.bindings.BindVertexArray(0);
         self.bindings.ActiveTexture(gl::TEXTURE0); // Activate texture unit 0
         self.bindings.BindTexture(gl::TEXTURE_2D, 0);
-        // self.bindings.ActiveTexture(gl::TEXTURE0 + 1); // Activate texture unit 0
-        // self.bindings.BindTexture(gl::TEXTURE_2D, 0);
         self.bindings.UseProgram(0);
     }
     // unsafe fn draw_pointer(&self, vertices: &[vertex::Vertex]) {

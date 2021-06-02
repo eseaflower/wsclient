@@ -403,7 +403,7 @@ impl View {
         for (id_suffix, (pane, layout)) in
             self.panes.iter_mut().zip(layouts.into_iter()).enumerate()
         {
-            dbg!(&layout);
+            log::debug!("New layout {:?}", &layout);
             pane.set_layout(layout);
             // Generate a unique name for each pane.
             pane.set_id(format!("{}:{}", self.video_id, id_suffix));
@@ -578,14 +578,18 @@ impl View {
     fn get_bitrate(&self) -> f32 {
         // Use the bitrate scaling and the viewport area
         // to compute the actual bitrate.
-        let pixel_area = self.layout.width * self.layout.height;
-        let bitrate_kb = (pixel_area as f32 / Self::BITRATE_PIXELS_PER_KB) * self.bitrate_scale;
+        let scaled_pixel_area = self.layout.width as f32
+            * self.layout.height as f32
+            * (self.video_scaling * self.video_scaling);
+        let bitrate_kb = (scaled_pixel_area as f32 / Self::BITRATE_PIXELS_PER_KB) * self.bitrate_scale;
         let bitrate_mb = bitrate_kb / 1_000f32;
         // Quantize into 0.5 MB bins.
         let bitrate_mb = (bitrate_mb * 2f32).round() / 2f32;
         log::trace!(
-            "Pixel area {} -> bitrate_kb {} -> bitrate_mb {}",
-            pixel_area, bitrate_kb, bitrate_mb
+            "Scaled pixel area {} -> bitrate_kb {} -> bitrate_mb {}",
+            scaled_pixel_area,
+            bitrate_kb,
+            bitrate_mb
         );
 
         bitrate_mb
