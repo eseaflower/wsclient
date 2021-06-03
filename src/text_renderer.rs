@@ -251,8 +251,7 @@ impl TextPartition {
 
     fn pixel_scale(&self) -> f32 {
         // Compute the pixel scale of the text, which depends on the viewport size
-        // Base on height of the viewport? 512 -> 16
-        self.viewport_size.1 * 20_f32 / 512_f32
+        (self.viewport_size.1 * 20_f32 / 512_f32).round().max(25f32)
     }
 
     pub fn add_text(&mut self, lines: Vec<&str>) {

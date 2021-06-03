@@ -567,30 +567,34 @@ impl View {
         self.dirty = true;
     }
 
-    pub fn handle_timer_event(&mut self) -> bool {
-        let mut need_update = false;
+    pub fn handle_timer_event(&mut self) -> Vec<(String, SyncOperation)> {
+        let mut sync_ops = Vec::new();
         for pane in self.panes.iter_mut() {
-            need_update |= pane.handle_timer_event();
+            if pane.handle_timer_event() {
+                // Run the update and collect sync operations
+                pane.update()
+                    .map(|s| sync_ops.push((pane.id().to_string(), s)));
+            }
         }
-        need_update
+        sync_ops
     }
 
     fn get_bitrate(&self) -> f32 {
+        if self.bitrate_scale <= 0_f32 {
+            // If scale is 0, we want lossless
+            return 0_f32;
+        }
+
         // Use the bitrate scaling and the viewport area
         // to compute the actual bitrate.
         let scaled_pixel_area = self.layout.width as f32
             * self.layout.height as f32
             * (self.video_scaling * self.video_scaling);
-        let bitrate_kb = (scaled_pixel_area as f32 / Self::BITRATE_PIXELS_PER_KB) * self.bitrate_scale;
+        let bitrate_kb =
+            (scaled_pixel_area as f32 / Self::BITRATE_PIXELS_PER_KB) * self.bitrate_scale;
         let bitrate_mb = bitrate_kb / 1_000f32;
-        // Quantize into 0.5 MB bins.
-        let bitrate_mb = (bitrate_mb * 2f32).round() / 2f32;
-        // log::trace!(
-        //     "Scaled pixel area {} -> bitrate_kb {} -> bitrate_mb {}",
-        //     scaled_pixel_area,
-        //     bitrate_kb,
-        //     bitrate_mb
-        // );
+        // Quantize into 0.5 MB bins. Don't allow less than 0.5 MB.
+        let bitrate_mb = ((bitrate_mb * 2f32).round() / 2f32).max(0.5f32);
 
         bitrate_mb
     }
@@ -866,12 +870,16 @@ impl ViewControl {
             false
         }
     }
-    pub fn update(&mut self) {
+    pub fn update_focused(&mut self) {
         let sync_update = self
             .get_focused_view()
             .and_then(|v| v.get_focused_pane())
             .and_then(|pane| pane.update().map(|op| (pane.id().to_string(), op)));
 
+        self.apply_update(sync_update);
+    }
+
+    fn apply_update(&mut self, sync_update: Option<(String, SyncOperation)>) {
         if let Some(sync_update) = sync_update {
             log::trace!("Running sync op from pane {}", &sync_update.0);
             // Run the sync update.
@@ -880,6 +888,7 @@ impl ViewControl {
             self.active_apply_mut(View::update);
         }
     }
+
     pub fn push_state(&mut self) {
         self.active_apply_mut(View::push_state);
     }
@@ -1153,14 +1162,18 @@ impl ViewControl {
 
     pub fn handle_timer_event(&mut self) {
         // Let each View/Pane handle the timer event, then run update
-        let mut do_update = false;
+        let mut sync_ops = Vec::new();
         for idx in &self.active {
             let view = self.views.get_mut(*idx).expect("Failed to get view");
-            let needs_update = view.handle_timer_event();
-            do_update |= needs_update;
+            let view_ops = view.handle_timer_event();
+            view_ops.into_iter().for_each(|s| sync_ops.push(s));
         }
-        if do_update {
-            self.update();
+        if sync_ops.len() > 0 {
+            // For now we just execute the first op.
+            sync_ops
+                .into_iter()
+                .take(1)
+                .for_each(|s| self.apply_update(Some(s)));
         }
     }
 }

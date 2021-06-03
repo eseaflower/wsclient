@@ -860,7 +860,7 @@ impl App {
                             window.set_cursor_visible(true);
                         }
                     }
-                    view_control.update();
+                    view_control.update_focused();
                 }
                 Event::MainEventsCleared => {}
                 Event::RedrawRequested(_) => {
