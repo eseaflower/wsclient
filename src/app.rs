@@ -668,7 +668,7 @@ impl App {
     pub fn main_loop(self, config: AppConfig) -> Result<()> {
         log::debug!("Starting app main loop on current thread");
 
-        let mut view_control = ViewControl::new(1, &config);
+        let mut view_control = ViewControl::new(&config);
         view_control.partition(1, 1);
 
         let window_size = (config.viewport_size.0, config.viewport_size.1);

@@ -12,6 +12,7 @@ use futures::{
     future, Sink, SinkExt, Stream, StreamExt, TryStreamExt,
 };
 use message::AppMessage;
+use util::bitrate::Schedule;
 use view::ViewControl;
 
 mod app;
@@ -41,6 +42,8 @@ pub struct AppConfig {
     tcp: bool,
     decoder: Decoder,
     jitter: u32,
+    n_views: usize,
+    schedule: Schedule,
 }
 impl AppConfig {
     pub fn new(
@@ -58,6 +61,8 @@ impl AppConfig {
         client_hw: bool,
         fast_sw_decode: bool,
         jitter: u32,
+        n_views: usize,
+        scedule_string: String,
     ) -> Self {
         let decoder = if fast_sw_decode {
             Decoder::FastSoftware
@@ -65,6 +70,11 @@ impl AppConfig {
             Decoder::Hardware
         } else {
             Decoder::Software
+        };
+        let schedule = match &scedule_string[..] {
+            "performance" => Schedule::Performance,
+            "quality" => Schedule::Quality,
+            _ => Schedule::Default,
         };
         Self {
             ws_url,
@@ -80,6 +90,8 @@ impl AppConfig {
             tcp,
             decoder,
             jitter,
+            n_views,
+            schedule,
         }
     }
 }

@@ -133,6 +133,7 @@ pub struct RenderState {
     pub timestamp: f32,
     pub snapshot: bool,
     pub bitrate: f32,
+    pub scaling: f32,
 }
 
 impl RenderState {
@@ -156,6 +157,7 @@ impl Default for RenderState {
             timestamp: 0.0_f32,
             snapshot: false,
             bitrate: 4f32,
+            scaling: 1f32,
         }
     }
 }

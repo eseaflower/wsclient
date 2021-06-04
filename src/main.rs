@@ -33,6 +33,10 @@ struct Opt {
     fast_sw: bool,
     #[structopt(long, default_value = "200")]
     jitter: u32,
+    #[structopt(long, default_value = "1")]
+    views: usize,
+    #[structopt(long, default_value = "default")]
+    rate_schedule: String,
 }
 
 fn main() -> Result<()> {
@@ -54,6 +58,8 @@ fn main() -> Result<()> {
         opt.client_hw,
         opt.fast_sw,
         opt.jitter,
+        opt.views,
+        opt.rate_schedule,
     );
     log::info!("Running with config: {:?}", &config);
     wsclient::run(config)

@@ -18,6 +18,7 @@ use crate::{
         CaseMeta, ClientConfig, DataMessage, LayoutCfg, LayoutRect, PaneState, Protocols,
         RenderState, ViewportSize,
     },
+    util::bitrate::Schedule,
     view,
     view_state::ViewState,
     window_message::ViewSample,
@@ -249,6 +250,7 @@ pub struct View {
     focus: Option<usize>,
     seq: u64,
     timer: std::time::Instant,
+    schedule: Schedule,
 }
 
 impl View {
@@ -264,6 +266,7 @@ impl View {
         lossless: bool,
         video_scaling: f32,
         fullrange: bool,
+        schedule: Schedule,
     ) -> Self {
         // This is the expected name of the data channel.
         let data_id = format!("video{}-data", video_id);
@@ -286,6 +289,7 @@ impl View {
             focus: None,
             seq: 0,
             timer: std::time::Instant::now(),
+            schedule,
         }
     }
 
@@ -389,7 +393,11 @@ impl View {
     }
 
     pub fn set_layout(&mut self, layout: LayoutRect) {
-        self.layout = layout.clone();
+        self.layout = layout;
+        // Update the video scaling when the size changes.
+        self.video_scaling = self
+            .schedule
+            .scaling((self.layout.width, self.layout.height));
         // Remove the stale sample
         self.current_sample.take();
         self.dirty = true;
@@ -525,6 +533,7 @@ impl View {
                 snapshot: false,
                 timestamp: self.get_timestamp(),
                 bitrate: self.get_bitrate(),
+                scaling: self.video_scaling,
             });
             // Increase the sequence number
             self.seq += 1;
@@ -585,24 +594,22 @@ impl View {
             return 0_f32;
         }
 
-        // Use the bitrate scaling and the viewport area
-        // to compute the actual bitrate.
-        let scaled_pixel_area = self.layout.width as f32
-            * self.layout.height as f32
-            * (self.video_scaling * self.video_scaling);
-        let bitrate_kb =
-            (scaled_pixel_area as f32 / Self::BITRATE_PIXELS_PER_KB) * self.bitrate_scale;
-        let bitrate_mb = bitrate_kb / 1_000f32;
-        // Quantize into 0.5 MB bins. Don't allow less than 0.5 MB.
-        let bitrate_mb = ((bitrate_mb * 2f32).round() / 2f32).max(0.5f32);
-
-        bitrate_mb
+        // Check the rate schedule
+        self.schedule
+            .bitrate((self.layout.width, self.layout.height))
+            * self.bitrate_scale
     }
 
     pub fn adjust_bitrate_scaling(&mut self, direction: i32) {
         self.bitrate_scale += direction as f32 * Self::BITRATE_SCALE_DELTA;
         self.bitrate_scale = self.bitrate_scale.max(0.1);
-        println!("Setting new bitrate scale {}", self.bitrate_scale);
+        println!(
+            "Setting new bitrate scale {}, {}x{} -> {}",
+            self.bitrate_scale,
+            self.layout.width,
+            self.layout.height,
+            self.get_bitrate()
+        );
     }
 }
 
@@ -627,8 +634,8 @@ impl ViewControl {
     const DEFAULT_VIEW_WIDTH: u32 = 64;
     const DEFAULT_VIEW_HEIGHT: u32 = 64;
 
-    pub fn new(number_of_views: usize, config: &AppConfig) -> Self {
-        let views: Vec<_> = (0..number_of_views)
+    pub fn new(config: &AppConfig) -> Self {
+        let views: Vec<_> = (0..config.n_views)
             .map(|i| {
                 View::new(
                     i,
@@ -644,6 +651,7 @@ impl ViewControl {
                     config.lossless,
                     config.video_scaling,
                     !config.narrow,
+                    config.schedule,
                 )
             })
             .collect();
