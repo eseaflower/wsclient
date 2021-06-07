@@ -116,6 +116,17 @@ impl App {
         // println!("Setting 'synced' rtpjitterbuffer mode");
         // rtpbin.set_property_from_str("buffer-mode", "synced");
         } else {
+            // let agent = webrtcbin
+            //     .get_property("ice-agent")
+            //     .expect("Failed to get ice agent")
+            //     .get::<gst::Object>()
+            //     .expect("Failed to get object")
+            //     .expect("Object is empty");
+            // agent
+            //     .set_property("ice-tcp", &false)
+            //     .expect("Failed to disable TCP");
+
+
             // For UDP transfer we need some mechanisms to handle missing packets
             log::debug!("Allowing UDP, adding NACKs");
             webrtcbin
@@ -163,7 +174,9 @@ impl App {
         log::debug!("Setting 'synced' rtpjitterbuffer mode");
         rtpbin.set_property_from_str("buffer-mode", "synced");
         log::debug!("Setting jitter buffer latency to {}", jitter);
-        rtpbin.set_property("property_name", &jitter);
+        rtpbin
+            .set_property("latency", &jitter)
+            .expect("Failed to set jitter buffer latency");
 
         // END TODO
 

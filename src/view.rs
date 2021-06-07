@@ -255,7 +255,6 @@ pub struct View {
 
 impl View {
     const BITRATE_SCALE_DELTA: f32 = 0.1;
-    const BITRATE_PIXELS_PER_KB: f32 = 170f32;
 
     pub fn new(
         video_id: usize,
@@ -589,7 +588,7 @@ impl View {
     }
 
     fn get_bitrate(&self) -> f32 {
-        if self.bitrate_scale <= 0_f32 {
+        if self.lossless {
             // If scale is 0, we want lossless
             return 0_f32;
         }
