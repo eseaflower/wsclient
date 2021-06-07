@@ -495,7 +495,7 @@ impl GlRenderer {
 
     pub fn clear(&self) {
         unsafe {
-            self.bindings.ClearColor(1.0, 0.0, 0.0, 1.0);
+            self.bindings.ClearColor(0.0, 0.0, 0.0, 1.0);
             self.bindings.Clear(gl::COLOR_BUFFER_BIT);
         }
     }

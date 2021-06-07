@@ -630,8 +630,9 @@ pub struct ViewControl {
 
 impl ViewControl {
     // When using the nvh264enc HW encoder we require at least dimensions 33x17 ???
-    const DEFAULT_VIEW_WIDTH: u32 = 64;
-    const DEFAULT_VIEW_HEIGHT: u32 = 64;
+    // 145x49 on Turing
+    const DEFAULT_VIEW_WIDTH: u32 = 256;
+    const DEFAULT_VIEW_HEIGHT: u32 = 256;
 
     pub fn new(config: &AppConfig) -> Self {
         let views: Vec<_> = (0..config.n_views)
