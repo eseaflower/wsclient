@@ -1,0 +1,60 @@
+Available commands/interactions:
+Commands generally affect the currently focused pane. The focused pane is the pane
+that contains the mouse cursor.
+
+Pan - Left mouse + Mouse move
+Zoom - Ctrl + Left mouse + Mouse move
+Window/Level - Middle mouse + Mouse move
+Scroll - Mouse wheel
+Fast scroll - Left + Right mouse + Mouse move
+Single pane view - Double click (double click again to restore)
+
+Switch case in pane - Keyboard Up/Down
+Switch protocol - Keyboard Left/Right
+Adjust bitrate of focused view - Keyboard B (increase) / V (decrease)
+    * Note: The focused view is the view that contains the focused pane
+    (in case there are more than 1 view see --views)
+
+Toggle sync - Keyboard S, toggle sync for the focused pane on/off
+Start Cine loop - Keyboard C, starts Cine in the focused pane.
+    * For synchronized panes only one pane should start cine.
+Adjust Cine speed - Keyboard I (increase) / U (decrease)
+
+
+
+NOTES:
+* Resizing the window will execute after a 500ms delay
+  OBSERVE: The hardware encoder has a lower limit on the size of the
+  framebuffer, which varies between different GPUs. If the window is resized
+  below about 150px the server pipeline will crash.
+* Depending on network conditions the size of the jitterbuffer
+  might need to be increased from its default of 200ms (--jitter option)
+* The --cpu option will force the server (!) to use software
+  encoding instead of the default hardware encoding, this should
+  normally not be used.
+* Running with --lossless will disable the possibillity to adjust the
+  bitrate on the fly.
+* The --video-scaling option should not be used. The scaling is included
+  in the relevant rate-schedule.
+* --rate-schedule can have values of default, performance or quality
+  It is an effort to get good tradeoffs for different viewport sizes and
+  bandwidth requirements.
+* Either (but not both) --protocol or --case can be used to set a starting protocol/case.
+* --preset should be left at default, it decides the encoder preset used by the hardware encoder.
+  (Only default has been "tested" other settings gives all kind of weired behaviour)
+* --tcp can be used to restrict the connection negotiation to only consider TCP. This
+  could be an option if the network is extremly spotty, otherwise both TCP and UDP is considered
+  and UDP is preferred. With UDP there is always a risk of loosing packets, using NACKS and
+  a correctly sized jitterbuffer should alleviate most of the issues.
+* --narrow disables the use of full range color conversion, its not reccomended!
+* By default the client uses a software H.264 decoder that has features that stop potentially
+  corrupted frames from reaching the renderer. This is desirable, but comes at a significant
+  performance cost. If the client is running an nvidia graphics card it is reccomended to try the
+  --client-hw instead. This will offload the decoding to the GPU and give the best possible latency.
+  An alternative for non nvida systems is to use --fast-sw. This will use FFMpegs fast H.264 decoder.
+  This decoder has some issues with corrupt frames, something to be aware of.
+* --width, --height sets the intial size of the client area of the main window. The window can be resized
+  afterwards.
+* --views, controls the number of different video streams that the client will use to distribute the panes
+  A larger number of views gives better control of how to resize the video streams, but can cause larger delays
+  when switching layouts. Typical figures are 1-4 views (1 beeing the default).
