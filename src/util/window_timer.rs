@@ -1,25 +1,24 @@
-use glutin::event_loop::EventLoopProxy;
-
-use crate::window_message::WindowMessage;
-
 use super::timed_iter::timer;
 
-pub struct TimerMessage {
-    message: WindowMessage,
+pub struct TimerMessage<T> {
+    message: T,
     repeat: bool,
     duration: std::time::Duration,
     ticks: usize,
 }
 
-pub struct WindowTimer {
-    sender: std::sync::mpsc::Sender<TimerMessage>,
+pub struct WindowTimer<T> {
+    sender: std::sync::mpsc::Sender<TimerMessage<T>>,
     _handle: std::thread::JoinHandle<()>,
     poll_interval: std::time::Duration,
 }
 
-impl WindowTimer {
-    pub fn new(proxy: EventLoopProxy<WindowMessage>, poll_interval: std::time::Duration) -> Self {
-        let (sender, recevier) = std::sync::mpsc::channel::<TimerMessage>();
+impl<T: Clone + Send + 'static> WindowTimer<T> {
+    pub fn new<F: FnMut(T) + Send + 'static>(
+        mut dispatch: F,
+        poll_interval: std::time::Duration,
+    ) -> Self {
+        let (sender, recevier) = std::sync::mpsc::channel::<TimerMessage<T>>();
         let _handle = std::thread::spawn(move || {
             let mut active_timers = Vec::new();
 
@@ -41,9 +40,7 @@ impl WindowTimer {
                             timer.ticks = Self::duration_to_polls(timer.duration, poll_interval);
                         }
                         // Send the message
-                        proxy
-                            .send_event(timer.message.clone())
-                            .expect("Failed to send window message");
+                        dispatch(timer.message.clone());
                     }
                 }
                 // remove all expired timers.
@@ -68,7 +65,7 @@ impl WindowTimer {
         (duration.as_secs_f64() / poll_interval.as_secs_f64()).ceil() as usize
     }
 
-    pub fn once(&self, message: WindowMessage, duration: std::time::Duration) {
+    pub fn once(&self, message: T, duration: std::time::Duration) {
         let timer = TimerMessage {
             message,
             duration,
@@ -80,7 +77,7 @@ impl WindowTimer {
             .expect("Failed to send new timer message");
     }
 
-    pub fn repeat(&self, message: WindowMessage, duration: std::time::Duration) {
+    pub fn repeat(&self, message: T, duration: std::time::Duration) {
         let timer = TimerMessage {
             message,
             duration,

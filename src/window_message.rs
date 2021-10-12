@@ -1,3 +1,5 @@
+use glutin::event::Event;
+
 use crate::message::{CaseMeta, Protocols};
 use std::time::Duration;
 
@@ -17,4 +19,10 @@ pub enum WindowMessage {
     Datachannel(gstreamer_webrtc::WebRTCDataChannel),
     UpdateLayout,
     JitterStats,
+}
+
+impl<'a> Into<Event<'a, WindowMessage>> for WindowMessage {
+    fn into(self) -> Event<'a, WindowMessage> {
+        Event::UserEvent(self)
+    }
 }
