@@ -11,9 +11,17 @@ use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver},
     future, Sink, SinkExt, Stream, StreamExt, TryStreamExt,
 };
+use glutin::{
+    dpi::PhysicalSize,
+    event::{ElementState, Event, MouseButton, WindowEvent},
+    event_loop::{ControlFlow, EventLoop},
+    window::WindowBuilder,
+};
 use message::AppMessage;
 use util::bitrate::Schedule;
 use view::ViewControl;
+
+use crate::window_message::WindowMessage;
 
 mod app;
 mod bindings;
@@ -173,9 +181,45 @@ pub fn run(config: AppConfig) -> Result<()> {
 
     let signal_thread = run_signalling(config.ws_url.clone(), Arc::downgrade(&app.0), rcv);
 
-    let _ = app.main_loop(config);
+    // Build the window and gl-context
+    let event_loop = EventLoop::<WindowMessage>::with_user_event();
+    let window_builder = WindowBuilder::new().with_inner_size(PhysicalSize {
+        width: config.viewport_size.0,
+        height: config.viewport_size.1,
+    });
+    let main_context = glutin::ContextBuilder::new()
+        .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (4, 5)))
+        .with_gl_profile(glutin::GlProfile::Core)
+        .with_vsync(false)
+        .build_windowed(window_builder, &event_loop)
+        .expect("Failed to build GL main context");
+    let (main_context, window) = unsafe { main_context.split() };
+    let (snd, message_thread) = app.start(config, main_context);
+
+    event_loop.run(move |event, _target, flow| {
+        *flow = ControlFlow::Wait;
+        match &event {
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::MouseInput { state, button, .. } if *button == MouseButton::Left => {
+                    match *state {
+                        ElementState::Pressed => window.set_cursor_visible(false),
+                        ElementState::Released => window.set_cursor_visible(true),
+                    }
+                }
+                WindowEvent::CloseRequested => {
+                    *flow = ControlFlow::Exit;
+                }
+                _ => {}
+            },
+            _ => {}
+        };
+        // Convert messages with static lifetimes, ignore the one (ScaleFactorChanged) that cant be converted.
+        event.to_static().map(|event| snd.send(event));
+    });
+
     // Wait for the signal thread to complete (it exits when the app is dropped)
     let _ = signal_thread.join();
+    let _ = message_thread.join();
     log::debug!("All done");
 
     Ok(())

@@ -1,3 +1,4 @@
+use async_std::task::JoinHandle;
 use event::{ElementState, VirtualKeyCode};
 use glutin::{
     dpi::PhysicalSize,
@@ -26,7 +27,7 @@ use std::{
     collections::HashMap,
     ops::Deref,
     sync::{
-        mpsc::{channel, Sender},
+        mpsc::{channel, Receiver, Sender},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -683,18 +684,36 @@ impl App {
         (main_context, renderer)
     }
 
-    pub fn main_loop(self, config: AppConfig) -> Result<()> {
+    pub fn start(
+        self,
+        config: AppConfig,
+        context: RawContext<NotCurrent>,
+    ) -> (
+        Sender<Event<'static, WindowMessage>>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (snd, rcv) = channel();
+        let messages = snd.clone();
+        let handle = std::thread::spawn(move || {
+            self.main_loop(config, context, snd, rcv);
+        });
+
+        (messages, handle)
+    }
+
+    fn main_loop(
+        self,
+        config: AppConfig,
+        main_context: RawContext<NotCurrent>,
+        snd: Sender<Event<'static, WindowMessage>>,
+        rcv: Receiver<Event<'static, WindowMessage>>,
+    ) {
         log::debug!("Starting app main loop on current thread");
 
         let mut view_control = ViewControl::new(&config);
         view_control.partition(1, 1);
 
         let mut window_size = (config.viewport_size.0, config.viewport_size.1);
-        let event_loop = EventLoop::<WindowMessage>::with_user_event();
-        let window_builder = WindowBuilder::new().with_inner_size(PhysicalSize {
-            width: window_size.0,
-            height: window_size.1,
-        });
 
         // Set the size of the view control to match the window.
         view_control.set_layout(LayoutRect {
@@ -703,17 +722,6 @@ impl App {
             width: window_size.0,
             height: window_size.1,
         });
-
-        let main_context = glutin::ContextBuilder::new()
-            .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (4, 5)))
-            .with_gl_profile(glutin::GlProfile::Core)
-            .with_vsync(false)
-            .build_windowed(window_builder, &event_loop)
-            .expect("Failed to build GL main context");
-
-        let (main_context, window) = unsafe { main_context.split() };
-
-        let (snd, rcv) = channel();
 
         // Set the event loop proxy on App
         let message_sender = snd.clone();
@@ -737,353 +745,183 @@ impl App {
         // Start a timer that traces JitterBuffer statistics
         timer.repeat(WindowMessage::JitterStats, Duration::from_millis(1000));
 
-        let _handle = std::thread::spawn(move || {
-            // Create GStreamer context
-            let (main_context, own_context, shared_display) =
-                Self::create_shared_context(main_context);
+        // let _handle = std::thread::spawn(move || {
+        // Create GStreamer context
+        let (main_context, own_context, shared_display) = Self::create_shared_context(main_context);
 
-            self.set_message_sender(message_sender);
-            self.set_shared_context(own_context.clone(), shared_display);
+        self.set_message_sender(message_sender);
+        self.set_shared_context(own_context.clone(), shared_display);
 
-            // Start the pipeline
-            self.pipeline
-                .set_state(gst::State::Playing)
-                .expect("Failed to set the pipeline to playing");
+        // Start the pipeline
+        self.pipeline
+            .set_state(gst::State::Playing)
+            .expect("Failed to set the pipeline to playing");
 
-            // Connect to server
-            self.connect(view_control.get_config());
+        // Connect to server
+        self.connect(view_control.get_config());
 
-            // We really need to ensure that connect() has been handled before we send another
-            // ws-request, otherwise the server might error out.
-            self.send_app_message(AppMessage::GetCases)
-                .expect("Failed to send GetCases");
-            // This is the context until we have the first sample, then we know
-            // that context sharing is done and we can current the context.
-            let mut tmp_ctx = Some(main_context);
-            let mut main_context: Option<RawContext<PossiblyCurrent>> = None;
-            let mut renderer: Option<GlRenderer> = None;
-            let mut own_context: Option<gst_gl::GLContext> = Some(own_context);
+        // We really need to ensure that connect() has been handled before we send another
+        // ws-request, otherwise the server might error out.
+        self.send_app_message(AppMessage::GetCases)
+            .expect("Failed to send GetCases");
+        // This is the context until we have the first sample, then we know
+        // that context sharing is done and we can current the context.
+        let mut tmp_ctx = Some(main_context);
+        let mut main_context: Option<RawContext<PossiblyCurrent>> = None;
+        let mut renderer: Option<GlRenderer> = None;
+        let mut own_context: Option<gst_gl::GLContext> = Some(own_context);
 
-            let mut layout_pending = false;
-            for event in rcv.iter() {
-                // The actual rendering seems not dependant on this loop.
-                // So we can wait for new events.
+        let mut layout_pending = false;
+        for event in rcv.iter() {
+            // The actual rendering seems not dependant on this loop.
+            // So we can wait for new events.
 
-                let mut do_render = false;
+            let mut do_render = false;
 
-                // Try to get the video overlay and move it into a normal reference
-                match event {
-                    Event::UserEvent(wm) => match wm {
-                        WindowMessage::Cases((protocols, cases)) => {
-                            view_control.set_case_meta(protocols, cases);
+            // Try to get the video overlay and move it into a normal reference
+            match event {
+                Event::UserEvent(wm) => match wm {
+                    WindowMessage::Cases((protocols, cases)) => {
+                        view_control.set_case_meta(protocols, cases);
 
-                            println!("Known cases:\n{}", view_control.get_case_string());
-                            println!("Known protocols:\n{}", view_control.get_protocol_string());
+                        println!("Known cases:\n{}", view_control.get_case_string());
+                        println!("Known protocols:\n{}", view_control.get_protocol_string());
 
-                            view_control.select_default_display();
-                        }
-                        WindowMessage::Datachannel(datachannel) => {
-                            view_control.set_datachannel(datachannel);
-                        }
-                        WindowMessage::Sample(index) => {
-                            // When we get the first sample we can current our context
-                            // and build the renderer, since now context-sharing should
-                            // be set up.
-                            if let Some(ctx) = tmp_ctx.take() {
-                                // Move the tmp_ctx into the main context after setting it current
-                                let (context, gl_rend) = Self::finalize_contexts(
-                                    ctx,
-                                    own_context.take().expect("Context is empty"),
-                                    self.get_pipe_context(index),
-                                    window_size,
-                                );
-                                // Assign the instances that we will use through out.
-                                main_context = Some(context);
-                                renderer = Some(gl_rend);
-                            }
-
-                            log::trace!("Main loop got a sample");
-
-                            // Get the latest sample for view 'index'
-                            self.get_sample(index)
-                                .map(|sample| view_control.push_sample(sample));
-
-                            // Request a redraw
-                            do_render = true;
-                            // main_context.as_ref().map(|c| {
-                            //     c.window().request_redraw();
-                            // });
-                        }
-                        WindowMessage::Timer(_) => {
-                            // Let the control react to timer events.
-                            view_control.handle_timer_event();
-
-                            view_control.push_state();
-                        }
-                        WindowMessage::UpdateLayout => {
-                            layout_pending = false;
-                            // Update the layout to fill the entire window.
-                            view_control.set_layout(LayoutRect {
-                                x: 0,
-                                y: 0,
-                                width: window_size.0,
-                                height: window_size.1,
-                            });
-                        }
-                        WindowMessage::PipelineError => {
-                            log::error!("Got error from pipeline, exiting");
-                            // *flow = ControlFlow::Exit;
-                            break;
-                        }
-                        WindowMessage::JitterStats => {
-                            self.pipeline.get_by_name("rtpjitterbuffer0").map(|e| {
-                                let gst_stats =
-                                    e.get_property("stats").expect("Failed to get stats");
-                                let stats = gst_stats
-                                    .get::<&gst::StructureRef>()
-                                    .expect("Failed to cast to StructureRef")
-                                    .expect("StructureRef is empty");
-
-                                let jitter_stats = to_jitter_stats(stats);
-                                log::trace!("{:?}", jitter_stats);
-                            });
-                        }
-                    },
-                    Event::WindowEvent { event, .. } => {
-                        let handled = match event {
-                            WindowEvent::Resized(size) => {
-                                // Also update the renderer with the new window size
-                                renderer
-                                    .as_mut()
-                                    .map(|r| r.set_window_size((size.width, size.height)));
-
-                                view_control.set_window_size((size.width, size.height));
-                                window_size = (size.width, size.height);
-                                if !layout_pending {
-                                    layout_pending = true;
-                                    timer.once(
-                                        WindowMessage::UpdateLayout,
-                                        Duration::from_millis(500),
-                                    );
-                                }
-
-                                // Make sure the GL-surface is resized
-                                main_context.as_ref().map(|c| {
-                                    c.resize(size);
-                                    // do_render = true;
-                                    // c.window().request_redraw();
-                                });
-                                true
-                            }
-                            _ => false,
-                        };
-
-                        if !handled {
-                            // Let the views handle the event
-                            view_control.handle_window_event(&event);
-                        }
-
-                        // Check if we should hide the cursor.
-                        // if let Some(ref main_context) = main_context {
-                        //     let window = main_context.window();
-                        //     if view_control.hide_cursor() {
-                        //         window.set_cursor_visible(false);
-                        //     } else {
-                        //         window.set_cursor_visible(true);
-                        //     }
-                        // }
-                        view_control.update_focused();
+                        view_control.select_default_display();
                     }
-                    Event::RedrawRequested(_) => {
-                        // Render the views
+                    WindowMessage::Datachannel(datachannel) => {
+                        view_control.set_datachannel(datachannel);
+                    }
+                    WindowMessage::Sample(index) => {
+                        // When we get the first sample we can current our context
+                        // and build the renderer, since now context-sharing should
+                        // be set up.
+                        if let Some(ctx) = tmp_ctx.take() {
+                            // Move the tmp_ctx into the main context after setting it current
+                            let (context, gl_rend) = Self::finalize_contexts(
+                                ctx,
+                                own_context.take().expect("Context is empty"),
+                                self.get_pipe_context(index),
+                                window_size,
+                            );
+                            // Assign the instances that we will use through out.
+                            main_context = Some(context);
+                            renderer = Some(gl_rend);
+                        }
+
+                        log::trace!("Main loop got a sample");
+
+                        // Get the latest sample for view 'index'
+                        self.get_sample(index)
+                            .map(|sample| view_control.push_sample(sample));
+
+                        // Request a redraw
                         do_render = true;
-                        //     renderer.as_mut().map(|r| {
-                        //         r.render_views(&view_control);
-                        //     });
-                        //     // Swap back buffer
-                        //     main_context
-                        //         .as_ref()
-                        //         .map(|c| c.swap_buffers().expect("Failed to swap back-buffer"));
+                        // main_context.as_ref().map(|c| {
+                        //     c.window().request_redraw();
+                        // });
                     }
-                    _ => (),
-                }
+                    WindowMessage::Timer(_) => {
+                        // Let the control react to timer events.
+                        view_control.handle_timer_event();
 
-                if do_render {
-                    renderer.as_mut().map(|r| {
-                        r.render_views(&view_control);
-                    });
-                    // Swap back buffer
-                    main_context
-                        .as_ref()
-                        .map(|c| c.swap_buffers().expect("Failed to swap back-buffer"));
-                }
-            }
-        });
+                        view_control.push_state();
+                    }
+                    WindowMessage::UpdateLayout => {
+                        layout_pending = false;
+                        // Update the layout to fill the entire window.
+                        view_control.set_layout(LayoutRect {
+                            x: 0,
+                            y: 0,
+                            width: window_size.0,
+                            height: window_size.1,
+                        });
+                    }
+                    WindowMessage::PipelineError => {
+                        log::error!("Got error from pipeline, exiting");
+                        // *flow = ControlFlow::Exit;
+                        break;
+                    }
+                    WindowMessage::JitterStats => {
+                        self.pipeline.get_by_name("rtpjitterbuffer0").map(|e| {
+                            let gst_stats = e.get_property("stats").expect("Failed to get stats");
+                            let stats = gst_stats
+                                .get::<&gst::StructureRef>()
+                                .expect("Failed to cast to StructureRef")
+                                .expect("StructureRef is empty");
 
-        event_loop.run(move |event, _target, flow| {
-            *flow = ControlFlow::Wait;
-            match &event {
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::MouseInput { state, button, .. }
-                        if *button == MouseButton::Left =>
-                    {
-                        match *state {
-                            ElementState::Pressed => window.set_cursor_visible(false), //todo!(),
-                            ElementState::Released => window.set_cursor_visible(true), //todo!(),
-                        }
+                            let jitter_stats = to_jitter_stats(stats);
+                            log::trace!("{:?}", jitter_stats);
+                        });
                     }
-                    WindowEvent::CloseRequested => {
-                        *flow = ControlFlow::Exit;
-                    }
-                    _ => {}
                 },
-                _ => {}
-            };
-            // Convert messages with static lifetimes, ignore the one (ScaleFactorChanged) that cant be converted.
-            event.to_static().map(|event| snd.send(event));
-            // snd.send(event.to_static());
-        });
+                Event::WindowEvent { event, .. } => {
+                    let handled = match event {
+                        WindowEvent::Resized(size) => {
+                            // Also update the renderer with the new window size
+                            renderer
+                                .as_mut()
+                                .map(|r| r.set_window_size((size.width, size.height)));
 
-        // event_loop.run(move |event, _target, flow| {
-        //     // The actual rendering seems not dependant on this loop.
-        //     // So we can wait for new events.
-        //     *flow = ControlFlow::Wait;
+                            view_control.set_window_size((size.width, size.height));
+                            window_size = (size.width, size.height);
+                            if !layout_pending {
+                                layout_pending = true;
+                                timer.once(WindowMessage::UpdateLayout, Duration::from_millis(500));
+                            }
 
-        //     // Try to get the video overlay and move it into a normal reference
-        //     match event {
-        //         Event::UserEvent(wm) => match wm {
-        //             WindowMessage::Cases((protocols, cases)) => {
-        //                 view_control.set_case_meta(protocols, cases);
+                            // Make sure the GL-surface is resized
+                            main_context.as_ref().map(|c| {
+                                c.resize(size);
+                                // do_render = true;
+                                // c.window().request_redraw();
+                            });
+                            true
+                        }
+                        _ => false,
+                    };
 
-        //                 println!("Known cases:\n{}", view_control.get_case_string());
-        //                 println!("Known protocols:\n{}", view_control.get_protocol_string());
+                    if !handled {
+                        // Let the views handle the event
+                        view_control.handle_window_event(&event);
+                    }
 
-        //                 view_control.select_default_display();
-        //             }
-        //             WindowMessage::Datachannel(datachannel) => {
-        //                 view_control.set_datachannel(datachannel);
-        //             }
-        //             WindowMessage::Sample(index) => {
-        //                 // When we get the first sample we can current our context
-        //                 // and build the renderer, since now context-sharing should
-        //                 // be set up.
-        //                 if let Some(ctx) = tmp_ctx.take() {
-        //                     // Move the tmp_ctx into the main context after setting it current
-        //                     let (context, gl_rend) = Self::finalize_contexts(
-        //                         ctx,
-        //                         own_context.take().expect("Context is empty"),
-        //                         self.get_pipe_context(index),
-        //                     );
-        //                     // Assign the instances that we will use through out.
-        //                     main_context = Some(context);
-        //                     renderer = Some(gl_rend);
-        //                 }
+                    // Check if we should hide the cursor.
+                    // if let Some(ref main_context) = main_context {
+                    //     let window = main_context.window();
+                    //     if view_control.hide_cursor() {
+                    //         window.set_cursor_visible(false);
+                    //     } else {
+                    //         window.set_cursor_visible(true);
+                    //     }
+                    // }
+                    view_control.update_focused();
+                }
+                Event::RedrawRequested(_) => {
+                    // Render the views
+                    do_render = true;
+                    //     renderer.as_mut().map(|r| {
+                    //         r.render_views(&view_control);
+                    //     });
+                    //     // Swap back buffer
+                    //     main_context
+                    //         .as_ref()
+                    //         .map(|c| c.swap_buffers().expect("Failed to swap back-buffer"));
+                }
+                _ => (),
+            }
 
-        //                 log::trace!("Main loop got a sample");
+            if do_render {
+                renderer.as_mut().map(|r| {
+                    r.render_views(&view_control);
+                });
+                // Swap back buffer
+                main_context
+                    .as_ref()
+                    .map(|c| c.swap_buffers().expect("Failed to swap back-buffer"));
+            }
+        }
 
-        //                 // Get the latest sample for view 'index'
-        //                 self.get_sample(index)
-        //                     .map(|sample| view_control.push_sample(sample));
-
-        //                 // Request a redraw
-        //                 main_context.as_ref().map(|c| {
-        //                     c.window().request_redraw();
-        //                 });
-        //             }
-        //             WindowMessage::Timer(_) => {
-        //                 // Let the control react to timer events.
-        //                 view_control.handle_timer_event();
-
-        //                 view_control.push_state();
-        //             }
-        //             WindowMessage::UpdateLayout => {
-        //                 layout_pending = false;
-        //                 main_context.as_ref().map(|c| {
-        //                     let size = c.window().inner_size();
-        //                     // Update the layout to fill the entire window.
-        //                     view_control.set_layout(LayoutRect {
-        //                         x: 0,
-        //                         y: 0,
-        //                         width: size.width,
-        //                         height: size.height,
-        //                     });
-        //                 });
-        //             }
-        //             WindowMessage::PipelineError => {
-        //                 log::error!("Got error from pipeline, exiting");
-        //                 *flow = ControlFlow::Exit;
-        //             }
-        //             WindowMessage::JitterStats => {
-        //                 self.pipeline.get_by_name("rtpjitterbuffer0").map(|e| {
-        //                     let gst_stats = e.get_property("stats").expect("Failed to get stats");
-        //                     let stats = gst_stats
-        //                         .get::<&gst::StructureRef>()
-        //                         .expect("Failed to cast to StructureRef")
-        //                         .expect("StructureRef is empty");
-
-        //                     let jitter_stats = to_jitter_stats(stats);
-        //                     log::trace!("{:?}", jitter_stats);
-        //                 });
-        //             }
-        //         },
-        //         Event::WindowEvent { event, .. } => {
-        //             let handled = match event {
-        //                 WindowEvent::CloseRequested => {
-        //                     *flow = ControlFlow::Exit;
-        //                     true
-        //                 }
-        //                 WindowEvent::Resized(size) => {
-        //                     // Also update the renderer with the new window size
-        //                     renderer
-        //                         .as_mut()
-        //                         .map(|r| r.set_window_size((size.width, size.height)));
-
-        //                     view_control.set_window_size((size.width, size.height));
-        //                     if !layout_pending {
-        //                         layout_pending = true;
-        //                         timer.once(WindowMessage::UpdateLayout, Duration::from_millis(500));
-        //                     }
-
-        //                     // Make sure the GL-surface is resized
-        //                     main_context.as_ref().map(|c| {
-        //                         c.resize(size);
-        //                         c.window().request_redraw();
-        //                     });
-        //                     true
-        //                 }
-        //                 _ => false,
-        //             };
-
-        //             if !handled {
-        //                 // Let the views handle the event
-        //                 view_control.handle_window_event(&event);
-        //             }
-
-        //             // Check if we should hide the cursor.
-        //             if let Some(ref main_context) = main_context {
-        //                 let window = main_context.window();
-        //                 if view_control.hide_cursor() {
-        //                     window.set_cursor_visible(false);
-        //                 } else {
-        //                     window.set_cursor_visible(true);
-        //                 }
-        //             }
-        //             view_control.update_focused();
-        //         }
-        //         Event::MainEventsCleared => {}
-        //         Event::RedrawRequested(_) => {
-        //             // Render the views
-        //             renderer.as_mut().map(|r| {
-        //                 r.render_views(&view_control);
-        //             });
-        //             // Swap back buffer
-        //             main_context
-        //                 .as_ref()
-        //                 .map(|c| c.swap_buffers().expect("Failed to swap back-buffer"));
-        //         }
-        //         _ => (),
-        //     }
-        // });
     }
 }
 #[derive(Debug)]
