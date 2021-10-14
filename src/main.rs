@@ -1,5 +1,6 @@
 use anyhow::Result;
 use structopt::StructOpt;
+
 #[derive(StructOpt, Debug)]
 struct Opt {
     /// The addres of the web-socket server.

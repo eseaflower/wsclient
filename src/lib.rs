@@ -1,6 +1,6 @@
 use std::{
     convert::TryInto,
-    sync::{Arc, Weak},
+    sync::{mpsc::Sender, Arc, Weak},
 };
 
 use anyhow::Result;
@@ -16,10 +16,10 @@ use glutin::{
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
+    NotCurrent, RawContext,
 };
 use message::AppMessage;
 use util::bitrate::Schedule;
-use view::ViewControl;
 
 use crate::window_message::WindowMessage;
 
@@ -122,18 +122,23 @@ where
     let handle = async_std::task::spawn(async move {
         let _ = stream
             .try_for_each(|msg| async {
-                if let Ok(msg) = msg.try_into() {
-                    if let Some(app) = weak_app.upgrade().map(App) {
-                        if let Err(e) = app.handle_app_message(msg) {
-                            log::error!("Failed to handle app message: {:?}", e);
+                match msg {
+                    Message::Close(_) => Err(anyhow::anyhow!("Got close frame from server")),
+                    _ => {
+                        if let Ok(msg) = msg.try_into() {
+                            if let Some(app) = weak_app.upgrade().map(App) {
+                                if let Err(e) = app.handle_app_message(msg) {
+                                    log::error!("Failed to handle app message: {:?}", e);
+                                }
+                            } else {
+                                log::error!("Failed to upgrade weak reference");
+                            }
+                        } else {
+                            log::error!("Failed to deserialize AppMessage");
                         }
-                    } else {
-                        log::error!("Failed to upgrade weak reference");
+                        Ok(())
                     }
-                } else {
-                    log::error!("Failed to deserialize AppMessage");
                 }
-                Ok(())
             })
             .await;
         log::info!("Exiting receiver task");
@@ -163,6 +168,7 @@ fn run_signalling(
             // Let this task run until either the server closses the connection or the signal sender (snd) is dropped.
             // The signal sender will be dropped when the App is dropped, which means that the sender task will complete.
             let (_, _, to_cancel) = future::select_all(vec![send_handle, receive_handle]).await;
+
             // Make sure all remaining tasks are canceled
             future::join_all(to_cancel.into_iter().map(|x| x.cancel())).await;
 
@@ -172,16 +178,6 @@ fn run_signalling(
 }
 
 pub fn run(config: AppConfig) -> Result<()> {
-    // Init GStreamer
-    gstreamer::init().expect("Failed to initialize GStreamer");
-
-    // Create the views that we want connected.
-    let (snd, rcv) = unbounded::<AppMessage>();
-    let app = App::new(snd, config.tcp, config.decoder, config.jitter);
-
-    let signal_thread = run_signalling(config.ws_url.clone(), Arc::downgrade(&app.0), rcv);
-
-    // Build the window and gl-context
     let event_loop = EventLoop::<WindowMessage>::with_user_event();
     let window_builder = WindowBuilder::new().with_inner_size(PhysicalSize {
         width: config.viewport_size.0,
@@ -194,9 +190,15 @@ pub fn run(config: AppConfig) -> Result<()> {
         .build_windowed(window_builder, &event_loop)
         .expect("Failed to build GL main context");
     let (main_context, window) = unsafe { main_context.split() };
-    let (snd, message_thread) = app.start(config, main_context);
+
+    let app_control = start_app(config, main_context);
 
     event_loop.run(move |event, _target, flow| {
+        if *flow == ControlFlow::Exit {
+            // Once we are exiting we don't process messages
+            return;
+        }
+
         *flow = ControlFlow::Wait;
         match &event {
             Event::WindowEvent { event, .. } => match event {
@@ -214,13 +216,63 @@ pub fn run(config: AppConfig) -> Result<()> {
             _ => {}
         };
         // Convert messages with static lifetimes, ignore the one (ScaleFactorChanged) that cant be converted.
-        event.to_static().map(|event| snd.send(event));
+        event.to_static().map(|event| app_control.send(event));
     });
+}
 
-    // Wait for the signal thread to complete (it exits when the app is dropped)
-    let _ = signal_thread.join();
-    let _ = message_thread.join();
-    log::debug!("All done");
+pub fn start_app(config: AppConfig, main_context: RawContext<NotCurrent>) -> AppControl {
+    // Init GStreamer
+    gstreamer::init().expect("Failed to initialize GStreamer");
 
-    Ok(())
+    // Create the views that we want connected.
+    let (snd, rcv) = unbounded::<AppMessage>();
+    let app = App::new(snd, config.tcp, config.decoder, config.jitter);
+
+    let signal_thread = run_signalling(config.ws_url.clone(), Arc::downgrade(&app.0), rcv);
+
+    // Build the window and gl-context
+    let (snd, message_thread) = app.start(config, main_context);
+
+    AppControl::new(signal_thread, message_thread, snd)
+}
+
+pub struct AppControl {
+    _signal_thread: Option<std::thread::JoinHandle<()>>,
+    _message_thread: Option<std::thread::JoinHandle<()>>,
+    message_sender: Option<Sender<Event<'static, WindowMessage>>>,
+}
+
+impl AppControl {
+    pub fn new(
+        signal_thread: std::thread::JoinHandle<()>,
+        message_thread: std::thread::JoinHandle<()>,
+        message_sender: Sender<Event<'static, WindowMessage>>,
+    ) -> Self {
+        Self {
+            _signal_thread: Some(signal_thread),
+            _message_thread: Some(message_thread),
+            message_sender: Some(message_sender),
+        }
+    }
+
+    pub fn send(&self, message: Event<'static, WindowMessage>) {
+        let result = self
+            .message_sender
+            .as_ref()
+            .map(|sender| sender.send(message));
+        result.map(|r| {
+            if r.is_err() {
+                log::warn!("Failed to send window message");
+            }
+        });
+    }
+}
+
+impl Drop for AppControl {
+    fn drop(&mut self) {
+        self.message_sender.take().map(|s| drop(s));
+        self._message_thread.take().map(|t| t.join());
+        self._signal_thread.take().map(|t| t.join());
+        log::debug!("Dropped AppControl");
+    }
 }

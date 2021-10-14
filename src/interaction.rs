@@ -94,7 +94,7 @@ impl InteractionState {
     }
 
     pub fn handle_modifiers(&mut self, state: ModifiersState) {
-        self.ctrl_pressed = state.ctrl();
+        self.ctrl_pressed = state.ctrl();        
     }
 
     pub fn handle_mouse_wheel(&mut self, delta: f32) {

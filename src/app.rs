@@ -772,7 +772,7 @@ impl App {
         let mut own_context: Option<gst_gl::GLContext> = Some(own_context);
 
         let mut layout_pending = false;
-        for event in rcv.iter() {
+        'main_loop: for event in rcv.iter() {
             // The actual rendering seems not dependant on this loop.
             // So we can wait for new events.
 
@@ -840,7 +840,7 @@ impl App {
                     WindowMessage::PipelineError => {
                         log::error!("Got error from pipeline, exiting");
                         // *flow = ControlFlow::Exit;
-                        break;
+                        break 'main_loop;
                     }
                     WindowMessage::JitterStats => {
                         self.pipeline.get_by_name("rtpjitterbuffer0").map(|e| {
@@ -877,6 +877,10 @@ impl App {
                                 // c.window().request_redraw();
                             });
                             true
+                        }
+                        WindowEvent::CloseRequested => {
+                            log::debug!("Got close message");
+                            break 'main_loop;
                         }
                         _ => false,
                     };
@@ -921,7 +925,6 @@ impl App {
                     .map(|c| c.swap_buffers().expect("Failed to swap back-buffer"));
             }
         }
-
     }
 }
 #[derive(Debug)]

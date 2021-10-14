@@ -7,10 +7,25 @@ pub struct TimerMessage<T> {
     ticks: usize,
 }
 
+enum TimerControl<T> {
+    Message(TimerMessage<T>),
+    Quit,
+}
+
 pub struct WindowTimer<T> {
-    sender: std::sync::mpsc::Sender<TimerMessage<T>>,
-    _handle: std::thread::JoinHandle<()>,
+    sender: std::sync::mpsc::Sender<TimerControl<T>>,
+    handle: Option<std::thread::JoinHandle<()>>,
     poll_interval: std::time::Duration,
+}
+
+impl<T> Drop for WindowTimer<T> {
+    fn drop(&mut self) {
+        self.sender
+            .send(TimerControl::Quit)
+            .expect("Failed to send quit message to timer");
+        self.handle.take().map(|t| t.join());
+        log::debug!("Timer is dropped");
+    }
 }
 
 impl<T: Clone + Send + 'static> WindowTimer<T> {
@@ -18,16 +33,18 @@ impl<T: Clone + Send + 'static> WindowTimer<T> {
         mut dispatch: F,
         poll_interval: std::time::Duration,
     ) -> Self {
-        let (sender, recevier) = std::sync::mpsc::channel::<TimerMessage<T>>();
-        let _handle = std::thread::spawn(move || {
+        let (sender, recevier) = std::sync::mpsc::channel::<TimerControl<T>>();
+        let handle = std::thread::spawn(move || {
             let mut active_timers = Vec::new();
 
-            for _ in timer(poll_interval) {
+            'timer_loop: for _ in timer(poll_interval) {
                 // Get all new timers
-                recevier
-                    .try_iter()
-                    .for_each(|timer| active_timers.push(timer));
-
+                for control in recevier.try_iter() {
+                    match control {
+                        TimerControl::Message(timer) => active_timers.push(timer),
+                        TimerControl::Quit => break 'timer_loop,
+                    }
+                }
                 // Reduce the `ticks` for each active timer.
                 for timer in &mut active_timers {
                     timer.ticks -= 1;
@@ -49,11 +66,13 @@ impl<T: Clone + Send + 'static> WindowTimer<T> {
                     .filter(|timer| timer.ticks > 0)
                     .collect();
             }
+
+            log::debug!("Timer loop has ended");
         });
 
         Self {
             sender,
-            _handle,
+            handle: Some(handle),
             poll_interval,
         }
     }
@@ -73,7 +92,7 @@ impl<T: Clone + Send + 'static> WindowTimer<T> {
             repeat: false,
         };
         self.sender
-            .send(timer)
+            .send(TimerControl::Message(timer))
             .expect("Failed to send new timer message");
     }
 
@@ -85,7 +104,7 @@ impl<T: Clone + Send + 'static> WindowTimer<T> {
             repeat: true,
         };
         self.sender
-            .send(timer)
+            .send(TimerControl::Message(timer))
             .expect("Failed to send new timer message");
     }
 }

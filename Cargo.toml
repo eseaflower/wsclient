@@ -19,15 +19,11 @@ gstreamer-app = {version="0.16"}
 gstreamer-video = {version="0.16"}
 gstreamer-gl = {version = "0.16" }
 anyhow="1.0"
-image="0.23"
-bytemuck = "1.4"
 cgmath = "0.18"
 log = "0.4"
 env_logger = "0.8"
 structopt = "0.3"
-dicom = "0.3"
 spin_sleep = "1.0"
-#winit = "0.24"
 raw-window-handle = "0.3"
 glutin = "0.26"
 glyph_brush = "0.7"
