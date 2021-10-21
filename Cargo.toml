@@ -25,7 +25,7 @@ env_logger = "0.8"
 structopt = "0.3"
 spin_sleep = "1.0"
 raw-window-handle = "0.3"
-glutin = "0.26"
+glutin = "0.27"
 glyph_brush = "0.7"
 
 [build-dependencies]
