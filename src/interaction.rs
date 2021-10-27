@@ -12,6 +12,7 @@ pub enum InteractionMode {
     Scroll,
     FastScroll,
     Wl,
+    Variate,
 }
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum SyncOperation {
@@ -94,7 +95,7 @@ impl InteractionState {
     }
 
     pub fn handle_modifiers(&mut self, state: ModifiersState) {
-        self.ctrl_pressed = state.ctrl();        
+        self.ctrl_pressed = state.ctrl();
     }
 
     pub fn handle_mouse_wheel(&mut self, delta: f32) {
@@ -116,6 +117,9 @@ impl InteractionState {
             return Some(InteractionMode::Scroll);
         }
         if self.middle_mouse {
+            if self.ctrl_pressed {
+                return Some(InteractionMode::Variate);
+            }
             return Some(InteractionMode::Wl);
         }
         None
@@ -249,6 +253,13 @@ impl InteractionState {
                         let delta_w = (1_f32 + movement.0 as f32 / 256.0_f32).max(0_f32);
                         self.viewstate.update_center(delta_c);
                         self.viewstate.update_width(delta_w);
+                        updated = true;
+                    }
+                }
+                InteractionMode::Variate => {
+                    if let Some(movement) = movement {
+                        let delta = (movement.1 as f32) * self.mouse_scale;
+                        self.viewstate.update_variate(Some(delta));
                         updated = true;
                     }
                 }

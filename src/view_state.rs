@@ -7,6 +7,7 @@ pub struct ViewState {
     pub frame: Option<u32>,
     pub wl: Wl,
     pub cursor: Option<(f32, f32)>,
+    pub variate: Option<f32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 #[serde(rename_all = "lowercase")]
@@ -40,6 +41,7 @@ impl ViewState {
                 center: 1.0,
             },
             cursor: None,
+            variate: None,
         }
     }
 
@@ -54,6 +56,7 @@ impl ViewState {
                     center: 1.0,
                 },
                 cursor: None,
+                variate: None,
             });
         }
         None
@@ -77,6 +80,7 @@ impl ViewState {
             frame: self.frame,
             wl: self.wl,
             cursor: None,
+            variate: self.variate,
         }
     }
 
@@ -115,5 +119,15 @@ impl ViewState {
 
     pub fn update_width(&mut self, scale: f32) {
         self.wl.width *= scale;
+    }
+
+    pub fn update_variate(&mut self, variate: Option<f32>) {
+        if let Some(variate) = variate {
+            // Add with default of 0,
+            let new_variate = self.variate.unwrap_or(0_f32) + variate;
+            self.variate = Some(new_variate.min(1.0).max(0.0));
+        } else {
+            self.variate = None;
+        }
     }
 }

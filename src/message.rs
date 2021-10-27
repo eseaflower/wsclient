@@ -68,6 +68,7 @@ pub struct PaneCfg {
 pub struct CaseMeta {
     pub key: String,
     pub number_of_images: usize,
+    pub number_of_variates: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
